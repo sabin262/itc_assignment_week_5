@@ -11,6 +11,6 @@ st.write("Use the sidebar to check each FastAPI endpoint from Streamlit.")
 render_endpoint_status("/health")
 
 st.subheader("Pages")
-st.page_link("pages/1_Summarize.py", label="Summarize")
+st.page_link("pages/1_Summarise.py", label="Summarise")
 st.page_link("pages/2_Compare.py", label="Compare")
 st.page_link("pages/3_Health.py", label="Health")
