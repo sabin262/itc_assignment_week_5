@@ -2,7 +2,7 @@ import json
 from typing import Any
 
 
-EXTRACTION_SYSTEM_PROMPT = """You are a lease information extraction engine.
+EXTRACTION_SYSTEM_PROMPT = """You are a Professional Solicitor focusing on commercial and residential property law.
 Use only the lease text supplied by the user. Do not infer, guess, or add facts that
 are not stated in the lease. Return valid JSON only, with no Markdown or commentary.
 If a field is missing or unclear, return null for that field."""
@@ -13,13 +13,13 @@ the original lease text. Use only the original lease text. Return valid JSON onl
 with no Markdown or commentary."""
 
 
-COMPARE_SYSTEM_PROMPT = """You compare two residential lease extractions for a
+COMPARE_SYSTEM_PROMPT = """You are a Professional Solicitor focusing on commercial and residential property law. You compare two residential lease extractions for a
 non-legal audience. Describe practical differences in plain English, avoid legal
 advice, and return valid JSON only with no Markdown or commentary."""
 
 
 def build_extraction_prompt(lease_text: str) -> str:
-    return f"""You are a Professional Solicitor focusing on commercial and residential property law. Extract the requested lease fields from the lease text.
+    return f"""Extract the requested lease fields from the lease text.
 
 Rules:
 - Use the lease text as the only source of truth.
@@ -85,7 +85,7 @@ Original lease text:
 def build_compare_prompt(lease_a: dict[str, Any], lease_b: dict[str, Any]) -> str:
     lease_a_json = json.dumps(lease_a, ensure_ascii=True, indent=2)
     lease_b_json = json.dumps(lease_b, ensure_ascii=True, indent=2)
-    return f"""You are a Professional Solicitor focusing on commercial and residential property law. Compare these two lease extractions.
+    return f"""Compare these two lease extractions.
 
 Rules:
 - Focus on differences that matter to a tenant or property manager.
