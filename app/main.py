@@ -1,10 +1,23 @@
-from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from collections.abc import Callable
+from typing import Annotated
+
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from pydantic import ValidationError, BaseModel, Field
+
+from app.config import get_settings
+from app.document_parser import DocumentParseError, extract_text_from_file
+from app.schemas import (
+    CompareRequest,
+    CompareResponse,
+    LeaseTextRequest,
+    SummariseResponse,
+    validate_lease_text,
+)
 
 
 app = FastAPI(
-    title="Week 5 FastAPI Service",
-    description="Backend service for Streamlit summarize, compare, and health pages.",
+    title="Smart Lease Summariser",
+    description="Grounded lease extraction and comparison API backed by Azure OpenAI.",
     version="1.0.0",
 )
 
@@ -48,12 +61,12 @@ def health() -> dict[str, object]:
     }
 
 
-@app.get("/summarize")
+@app.get("/summarise")
 def summarize_status() -> dict[str, str]:
     return endpoint_status("/summarize")
 
 
-@app.post("/summarize", response_model=SummaryResponse)
+@app.post("/summarise", response_model=SummaryResponse)
 def summarize(payload: SummaryRequest) -> SummaryResponse:
     cleaned = " ".join(payload.text.split())
     words = cleaned.split()

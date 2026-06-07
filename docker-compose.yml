@@ -1,25 +1,50 @@
 services:
   api:
     build:
-      context: ./fastapi_app
-    container_name: week5-fastapi
+      context: .
+      dockerfile: app/Dockerfile
+    image: smart-lease-summariser-api:local
     ports:
       - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PYTHONUNBUFFERED: "1"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  streamlit:
+  frontend:
     build:
-      context: ./streamlit_app
-    container_name: week5-streamlit
-    environment:
-      FASTAPI_URL: http://api:8000
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: smart-lease-summariser-frontend:local
     ports:
       - "8501:8501"
+    environment:
+      API_BASE_URL: "http://api:8000"
+      PYTHONUNBUFFERED: "1"
     depends_on:
       api:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=2).read()",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
