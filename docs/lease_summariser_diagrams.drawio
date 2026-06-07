@@ -1,0 +1,255 @@
+<mxfile host="app.diagrams.net" modified="2026-06-07T00:00:00.000Z" agent="Codex" version="24.7.17" type="device">
+  <diagram id="architecture-diagram" name="Architecture">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="arch-title" value="Smart Lease Summariser - Architecture" style="text;html=1;strokeColor=none;fillColor=none;fontSize=26;fontStyle=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="350" y="20" width="700" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-client-boundary" value="User Device" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="40" y="110" width="220" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-user" value="User&#xa;uploads .txt/.pdf/.docx&#xa;or pastes lease text" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="75" y="165" width="150" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-compose-boundary" value="Docker Compose" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="310" y="85" width="760" height="620" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-frontend-container" value="frontend service&#xa;Streamlit container&#xa;port 8501" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="360" y="150" width="220" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-frontend-modules" value="Frontend modules&#xa;streamlit_app.py&#xa;tabs.py / renderers.py&#xa;lease_inputs.py&#xa;api_client.py / error_utils.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf6e8;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="360" y="300" width="220" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-api-container" value="api service&#xa;FastAPI container&#xa;port 8000" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="680" y="130" width="300" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-routes" value="Routes&#xa;/summarise&#xa;/summarise-text&#xa;/compare&#xa;/compare-text&#xa;/health" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf2ff;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="650" y="250" width="160" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-parser" value="Document parser&#xa;.txt: UTF-8 text&#xa;.pdf: pypdf text extraction&#xa;.docx: python-docx" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf2ff;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="850" y="250" width="180" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-validation" value="Validation&#xa;minimum 100 words&#xa;HTTP 422 for invalid input" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="650" y="430" width="180" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-service" value="LeaseSummariserService&#xa;orchestrates extraction, guardrails, comparison" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="850" y="430" width="180" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-llm-client" value="AzureLeaseLLMClient&#xa;temperature 0.0&#xa;JSON-only prompts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="760" y="570" width="180" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-env" value=".env configuration&#xa;AZURE_OPENAI_API_KEY&#xa;AZURE_OPENAI_ENDPOINT&#xa;AZURE_OPENAI_API_VERSION&#xa;AZURE_OPENAI_DEPLOYMENT" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="390" y="520" width="250" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-azure-boundary" value="External Service" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="1130" y="210" width="220" height="260" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-azure" value="Azure OpenAI&#xa;deployment" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="290" width="160" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-tests" value="Tests&#xa;mocked FastAPI tests&#xa;parser tests&#xa;frontend renderer/error tests&#xa;custom pass-percentage summary" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="560" width="230" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-user-frontend" value="browser UI" style="endArrow=block;html=1;rounded=0;strokeWidth=2;" edge="1" parent="1" source="arch-user" target="arch-frontend-container">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-frontend-modules" value="renders tabs and results" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-frontend-container" target="arch-frontend-modules">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-frontend-api" value="HTTP JSON or multipart" style="endArrow=block;html=1;rounded=0;strokeWidth=2;" edge="1" parent="1" source="arch-frontend-container" target="arch-api-container">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-api-routes" value="dispatch" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-api-container" target="arch-routes">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-routes-parser" value="document endpoints" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-routes" target="arch-parser">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-routes-validation" value="text endpoints" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-routes" target="arch-validation">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-parser-validation" value="extracted text" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-parser" target="arch-validation">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-validation-service" value="valid lease text" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-validation" target="arch-service">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-service-client" value="extract, verify, compare" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-service" target="arch-llm-client">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-env-client" value="settings" style="endArrow=block;html=1;rounded=0;dashed=1;" edge="1" parent="1" source="arch-env" target="arch-llm-client">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-client-azure" value="Azure OpenAI API calls" style="endArrow=block;html=1;rounded=0;strokeWidth=2;" edge="1" parent="1" source="arch-llm-client" target="arch-azure">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-api-frontend-return" value="structured JSON response" style="endArrow=block;html=1;rounded=0;dashed=1;" edge="1" parent="1" source="arch-api-container" target="arch-frontend-container">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-tests-api" value="mock service factory" style="endArrow=block;html=1;rounded=0;dashed=1;" edge="1" parent="1" source="arch-tests" target="arch-api-container">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="workflow-diagram" name="Workflow">
+    <mxGraphModel dx="1400" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="2050" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="flow-title" value="Smart Lease Summariser - Request Workflow" style="text;html=1;strokeColor=none;fillColor=none;fontSize=26;fontStyle=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="340" y="20" width="720" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-start" value="Start&#xa;User opens Streamlit" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="80" width="180" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-mode" value="Choose workflow" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="620" y="190" width="160" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-summarise-input" value="Summarise&#xa;provide one lease" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="310" y="335" width="180" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-compare-input" value="Compare&#xa;provide Lease A and Lease B" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="910" y="335" width="190" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-input-type-a" value="Input source?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="330" y="455" width="140" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-input-type-b" value="Input source?&#xa;per lease" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="935" y="455" width="140" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-text-endpoint" value="Text endpoints&#xa;/summarise-text&#xa;/compare-text" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="120" y="590" width="190" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-doc-endpoint" value="Document endpoints&#xa;/summarise&#xa;/compare" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="500" y="590" width="190" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-doc-endpoint-compare" value="Document endpoints&#xa;/summarise&#xa;/compare" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="590" width="190" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-text-endpoint-compare" value="Text endpoint&#xa;/compare-text&#xa;when both inputs are text" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="770" y="590" width="200" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-parse-doc" value="Parse upload&#xa;.txt / .pdf / .docx&#xa;return 422 if unsupported or empty" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf2ff;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="500" y="720" width="210" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-parse-doc-compare" value="Parse each upload&#xa;.txt / .pdf / .docx&#xa;return 422 if unsupported or empty" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf2ff;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="720" width="220" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-validate" value="Validate text&#xa;at least 100 words?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="600" y="850" width="200" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-422" value="HTTP 422&#xa;show clear validation error in Streamlit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="190" y="865" width="230" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-extract" value="LLM call 1&#xa;Extraction prompt&#xa;JSON only, null for missing fields" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="1010" width="210" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-guardrail" value="LLM call 2&#xa;Guardrail verification&#xa;supported / unsupported / missing_from_extraction&#xa;with evidence snippets" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="1150" width="260" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-warnings" value="Build warnings&#xa;unsupported fields are exposed to API response" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="640" y="1310" width="230" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-compare-decision" value="Compare request?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="665" y="1430" width="170" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-compare-llm" value="LLM call 3&#xa;Compare extracted JSON objects&#xa;dates, rent, deposit, obligations, restrictions, tenant impact" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="930" y="1425" width="260" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-response-summary" value="Summarise response&#xa;extraction + verification + warnings" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="420" y="1580" width="240" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-response-compare" value="Compare response&#xa;Lease A summary + Lease B summary + structured differences" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="850" y="1580" width="280" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-display" value="Streamlit display order&#xa;1. Guardrail status and warnings&#xa;2. Extraction or comparison details&#xa;3. Raw JSON expander" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="590" y="1730" width="320" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-end" value="End" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="675" y="1890" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-start-mode" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;" edge="1" parent="1" source="flow-start" target="flow-mode">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-mode-summarise" value="Summarise" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-mode" target="flow-summarise-input">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-mode-compare" value="Compare" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-mode" target="flow-compare-input">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-sum-input-type" value="" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-summarise-input" target="flow-input-type-a">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-compare-input-type" value="" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-compare-input" target="flow-input-type-b">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-sum-text" value="Paste text" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-input-type-a" target="flow-text-endpoint">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-sum-doc" value="Upload file" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-input-type-a" target="flow-doc-endpoint">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-comp-text" value="both text" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-input-type-b" target="flow-text-endpoint-compare">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-comp-doc" value="any file upload" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-input-type-b" target="flow-doc-endpoint-compare">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-doc-parse" value="" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-doc-endpoint" target="flow-parse-doc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-doc-compare-parse" value="" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-doc-endpoint-compare" target="flow-parse-doc-compare">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-text-validate" value="" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-text-endpoint" target="flow-validate">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-comp-text-validate" value="" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-text-endpoint-compare" target="flow-validate">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-parse-validate" value="text" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-parse-doc" target="flow-validate">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-parse-compare-validate" value="texts" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-parse-doc-compare" target="flow-validate">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-validate-error" value="No" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-validate" target="flow-422">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-validate-extract" value="Yes" style="endArrow=block;html=1;rounded=0;strokeWidth=2;" edge="1" parent="1" source="flow-validate" target="flow-extract">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-extract-guardrail" value="extracted JSON" style="endArrow=block;html=1;rounded=0;strokeWidth=2;" edge="1" parent="1" source="flow-extract" target="flow-guardrail">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-guardrail-warnings" value="verification results" style="endArrow=block;html=1;rounded=0;strokeWidth=2;" edge="1" parent="1" source="flow-guardrail" target="flow-warnings">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-warnings-decision" value="" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-warnings" target="flow-compare-decision">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-decision-summarise" value="No" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-compare-decision" target="flow-response-summary">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-decision-compare" value="Yes" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-compare-decision" target="flow-compare-llm">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-compare-response" value="structured differences" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-compare-llm" target="flow-response-compare">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-summary-display" value="" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-response-summary" target="flow-display">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-compare-display" value="" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-response-compare" target="flow-display">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-display-end" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;" edge="1" parent="1" source="flow-display" target="flow-end">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
