@@ -2,10 +2,11 @@ from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
-from pydantic import ValidationError, BaseModel, Field
+from pydantic import ValidationError
 
 from app.config import get_settings
 from app.document_parser import DocumentParseError, extract_text_from_file
+from app.llm_client import AzureLeaseLLMClient, LLMResponseError
 from app.schemas import (
     CompareRequest,
     CompareResponse,
@@ -13,6 +14,7 @@ from app.schemas import (
     SummariseResponse,
     validate_lease_text,
 )
+from app.service import LeaseSummariserService
 
 
 app = FastAPI(
@@ -22,81 +24,106 @@ app = FastAPI(
 )
 
 
-class SummaryRequest(BaseModel):
-    text: str = Field(..., min_length=1, description="Text to summarize.")
+def create_lease_service() -> LeaseSummariserService:
+    settings = get_settings()
+    return LeaseSummariserService(AzureLeaseLLMClient(settings))
 
 
-class SummaryResponse(BaseModel):
-    status: str
-    summary: str
-    original_length: int
+def get_lease_service_factory() -> Callable[[], LeaseSummariserService]:
+    return create_lease_service
 
 
-class CompareRequest(BaseModel):
-    first_text: str = Field(..., min_length=1, description="First text value.")
-    second_text: str = Field(..., min_length=1, description="Second text value.")
-
-
-class CompareResponse(BaseModel):
-    status: str
-    are_equal: bool
-    length_difference: int
-    message: str
-
-
-def endpoint_status(name: str) -> dict[str, str]:
-    return {"endpoint": name, "status": "available"}
+LeaseServiceFactoryDependency = Annotated[
+    Callable[[], LeaseSummariserService],
+    Depends(get_lease_service_factory),
+]
 
 
 @app.get("/health")
-def health() -> dict[str, object]:
-    return {
-        "service": "fastapi",
-        "status": "ok",
-        "endpoints": {
-            "summarize": "available",
-            "compare": "available",
-            "health": "available",
-        },
-    }
+def health() -> dict[str, str]:
+    return {"status": "ok"}
 
 
-@app.get("/summarise")
-def summarize_status() -> dict[str, str]:
-    return endpoint_status("/summarize")
+@app.post("/summarise-text", response_model=SummariseResponse)
+def summarise_lease_text(
+    request: LeaseTextRequest,
+    service_factory: LeaseServiceFactoryDependency,
+) -> SummariseResponse:
+    return _summarise_text(request.lease_text, service_factory)
 
 
-@app.post("/summarise", response_model=SummaryResponse)
-def summarize(payload: SummaryRequest) -> SummaryResponse:
-    cleaned = " ".join(payload.text.split())
-    words = cleaned.split()
-    summary = " ".join(words[:30])
-
-    if len(words) > 30:
-        summary = f"{summary}..."
-
-    return SummaryResponse(
-        status="ok",
-        summary=summary,
-        original_length=len(payload.text),
-    )
+@app.post("/summarise", response_model=SummariseResponse)
+async def summarise_lease_document(
+    service_factory: LeaseServiceFactoryDependency,
+    file: UploadFile = File(...),
+) -> SummariseResponse:
+    lease_text = await _extract_upload_text(file)
+    return _summarise_text(lease_text, service_factory)
 
 
-@app.get("/compare")
-def compare_status() -> dict[str, str]:
-    return endpoint_status("/compare")
+@app.post("/compare-text", response_model=CompareResponse)
+def compare_lease_texts(
+    request: CompareRequest,
+    service_factory: LeaseServiceFactoryDependency,
+) -> CompareResponse:
+    return _compare_text(request.lease_a, request.lease_b, service_factory)
 
 
 @app.post("/compare", response_model=CompareResponse)
-def compare(payload: CompareRequest) -> CompareResponse:
-    normalized_first = " ".join(payload.first_text.lower().split())
-    normalized_second = " ".join(payload.second_text.lower().split())
-    are_equal = normalized_first == normalized_second
-    length_difference = abs(len(payload.first_text) - len(payload.second_text))
+async def compare_lease_documents(
+    service_factory: LeaseServiceFactoryDependency,
+    lease_a: UploadFile = File(...),
+    lease_b: UploadFile = File(...),
+) -> CompareResponse:
+    lease_a_text = await _extract_upload_text(lease_a)
+    lease_b_text = await _extract_upload_text(lease_b)
+    return _compare_text(lease_a_text, lease_b_text, service_factory)
 
-    return CompareResponse(
-        status="ok",
-        are_equal=are_equal,
-        length_difference=length_difference,
-        message="The submitted texts match." if are_equal else "The submitted texts differ.",
-    )
+
+def _summarise_text(
+    lease_text: str,
+    service_factory: Callable[[], LeaseSummariserService],
+) -> SummariseResponse:
+    try:
+        validated_text = validate_lease_text(lease_text)
+        service = service_factory()
+        return service.summarise(validated_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Azure OpenAI environment configuration is missing or invalid.",
+        ) from exc
+    except LLMResponseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+
+def _compare_text(
+    lease_a_text: str,
+    lease_b_text: str,
+    service_factory: Callable[[], LeaseSummariserService],
+) -> CompareResponse:
+    try:
+        validated_lease_a = validate_lease_text(lease_a_text)
+        validated_lease_b = validate_lease_text(lease_b_text)
+        service = service_factory()
+        return service.compare(validated_lease_a, validated_lease_b)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Azure OpenAI environment configuration is missing or invalid.",
+        ) from exc
+    except LLMResponseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+async def _extract_upload_text(file: UploadFile) -> str:
+    content = await file.read()
+    try:
+        return extract_text_from_file(file.filename or "", content)
+    except DocumentParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
