@@ -1,6 +1,6 @@
 import re
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -55,6 +55,9 @@ class LeaseExtraction(BaseModel):
     plain_english_summary: str | None = None
 
 
+LeaseFieldValue: TypeAlias = str | list[str] | None
+
+
 class VerificationStatus(str, Enum):
     supported = "supported"
     unsupported = "unsupported"
@@ -64,7 +67,7 @@ class VerificationStatus(str, Enum):
 class VerificationItem(BaseModel):
     field_name: str
     status: VerificationStatus
-    extracted_value: Any | None = None
+    extracted_value: LeaseFieldValue = None
     evidence: str | None = None
     explanation: str | None = None
 
@@ -82,8 +85,8 @@ class SummariseResponse(BaseModel):
 
 class LeaseDifference(BaseModel):
     field_name: str
-    lease_a_value: Any | None = None
-    lease_b_value: Any | None = None
+    lease_a_value: LeaseFieldValue = None
+    lease_b_value: LeaseFieldValue = None
     difference: str
     practical_impact: str | None = None
 
@@ -103,5 +106,5 @@ class ErrorResponse(BaseModel):
     detail: str | list[dict[str, Any]]
 
 
-LLMResponseFormat = Literal["json_object"]
+LLMResponseFormat = Literal["json_schema"]
 

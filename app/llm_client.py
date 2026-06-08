@@ -1,7 +1,8 @@
+from copy import deepcopy
 from typing import Any
 
 from openai import AzureOpenAI
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.config import Settings
 from app.json_utils import JSONParseError, parse_json_object
@@ -33,6 +34,7 @@ class AzureLeaseLLMClient:
         payload = self._chat_json(
             system_prompt=EXTRACTION_SYSTEM_PROMPT,
             user_prompt=build_extraction_prompt(lease_text),
+            response_model=LeaseExtraction,
         )
         return self._validate(payload, LeaseExtraction)
 
@@ -43,6 +45,7 @@ class AzureLeaseLLMClient:
                 lease_text,
                 extraction.model_dump(mode="json"),
             ),
+            response_model=GuardrailResult,
         )
         return self._validate(payload, GuardrailResult)
 
@@ -57,10 +60,16 @@ class AzureLeaseLLMClient:
                 lease_a_extraction.model_dump(mode="json"),
                 lease_b_extraction.model_dump(mode="json"),
             ),
+            response_model=LeaseComparison,
         )
         return self._validate(payload, LeaseComparison)
 
-    def _chat_json(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+    def _chat_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_model: type[BaseModel],
+    ) -> dict[str, Any]:
         response = self._client.chat.completions.create(
             model=self._deployment,
             messages=[
@@ -70,7 +79,7 @@ class AzureLeaseLLMClient:
             # Lease extraction is a deterministic information-retrieval task, so
             # temperature stays at 0.0 to minimise creative wording and guessing.
             temperature=0.0,
-            response_format={"type": "json_object"},
+            response_format=_build_json_schema_response_format(response_model),
         )
 
         content = response.choices[0].message.content
@@ -88,3 +97,36 @@ class AzureLeaseLLMClient:
             return model_type.model_validate(payload)
         except ValidationError as exc:
             raise LLMResponseError("Azure OpenAI returned JSON with an unexpected shape.") from exc
+
+
+def _build_json_schema_response_format(model_type: type[BaseModel]) -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": model_type.__name__,
+            "strict": True,
+            "schema": _make_openai_strict_schema(model_type.model_json_schema()),
+        },
+    }
+
+
+def _make_openai_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    strict_schema = deepcopy(schema)
+    _require_all_object_properties(strict_schema)
+    return strict_schema
+
+
+def _require_all_object_properties(schema_node: Any) -> None:
+    if isinstance(schema_node, dict):
+        schema_node.pop("default", None)
+
+        properties = schema_node.get("properties")
+        if isinstance(properties, dict):
+            schema_node["additionalProperties"] = False
+            schema_node["required"] = list(properties.keys())
+
+        for value in list(schema_node.values()):
+            _require_all_object_properties(value)
+    elif isinstance(schema_node, list):
+        for item in schema_node:
+            _require_all_object_properties(item)
