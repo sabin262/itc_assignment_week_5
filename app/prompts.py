@@ -28,22 +28,11 @@ Rules:
 - Keep obligations and unusual clauses concise and plain-English.
 - The one-paragraph summary must describe only what is supported by the lease text.
 
-Return JSON with exactly these keys:
-{{
-  "tenant_name": string or null,
-  "landlord_name": string or null,
-  "property_address": string or null,
-  "lease_start_date": string or null,
-  "lease_end_date": string or null,
-  "monthly_rent_amount": string or null,
-  "rent_payment_due_date": string or null,
-  "security_deposit_amount": string or null,
-  "notice_period_to_vacate": string or null,
-  "tenant_obligations": array of strings or null,
-  "landlord_obligations": array of strings or null,
-  "unusual_clauses": array of strings or null,
-  "plain_english_summary": string or null
-}}
+Return the structured response requested by the API schema. Populate these fields:
+tenant_name, landlord_name, property_address, lease_start_date, lease_end_date,
+monthly_rent_amount, rent_payment_due_date, security_deposit_amount,
+notice_period_to_vacate, tenant_obligations, landlord_obligations,
+unusual_clauses, and plain_english_summary.
 
 Lease text:
 {lease_text}"""
@@ -61,19 +50,11 @@ Rules:
 - For supported fields, include a short exact evidence snippet from the lease text.
 - For unsupported or missing fields, set evidence to null and explain the issue briefly.
 
-Return JSON with this shape:
-{{
-  "overall_supported": boolean,
-  "checks": [
-    {{
-      "field_name": string,
-      "status": "supported" | "unsupported" | "missing_from_extraction",
-      "extracted_value": any or null,
-      "evidence": string or null,
-      "explanation": string or null
-    }}
-  ]
-}}
+Return the structured response requested by the API schema. For each check,
+field_name is the extraction field being reviewed, status is "supported",
+"unsupported", or "missing_from_extraction", extracted_value is the extracted
+string value, list of strings, or null, evidence is a short lease snippet or null,
+and explanation is a brief issue description or null.
 
 Extracted JSON:
 {extraction_json}
@@ -94,19 +75,9 @@ Rules:
 - Do not invent a difference if both values are the same or both are null.
 - Avoid legal advice.
 
-Return JSON with this shape:
-{{
-  "summary": string or null,
-  "differences": [
-    {{
-      "field_name": string,
-      "lease_a_value": any or null,
-      "lease_b_value": any or null,
-      "difference": string,
-      "practical_impact": string or null
-    }}
-  ]
-}}
+Return the structured response requested by the API schema. For each difference,
+lease_a_value and lease_b_value should be the extracted string value, list of
+strings, or null.
 
 Lease A extraction:
 {lease_a_json}
