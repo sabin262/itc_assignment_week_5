@@ -3,7 +3,9 @@ services:
     build:
       context: .
       dockerfile: app/Dockerfile
-    image: smart-lease-summariser-api:local
+      provenance: false
+    #image: smart-lease-summariser-api:local
+    image: 666127452756.dkr.ecr.eu-west-2.amazonaws.com/sabin262/itc_assignment_week_5:latest_api
     ports:
       - "8000:8000"
     env_file:
@@ -27,7 +29,9 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
-    image: smart-lease-summariser-frontend:local
+      provenance: false
+    #image: smart-lease-summariser-frontend:local
+    image: 666127452756.dkr.ecr.eu-west-2.amazonaws.com/sabin262/itc_assignment_week_5:latest_frontend
     ports:
       - "8501:8501"
     environment:
