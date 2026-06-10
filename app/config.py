@@ -17,7 +17,23 @@ class Settings(BaseSettings):
     )
 
 
+class S3Settings(BaseSettings):
+    s3_bucket_name: str | None = Field(default=None, alias="S3_BUCKET_NAME")
+    s3_prefix: str = Field(default="sample_leases", alias="S3_PREFIX")
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+@lru_cache
+def get_s3_settings() -> S3Settings:
+    return S3Settings()
 

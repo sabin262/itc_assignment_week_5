@@ -34,6 +34,16 @@ AZURE_OPENAI_API_VERSION=
 AZURE_OPENAI_DEPLOYMENT=
 ```
 
+Optional S3 variables for the S3 lease tab and S3 API endpoints:
+
+```text
+S3_BUCKET_NAME=
+S3_PREFIX=sample_leases
+AWS_REGION=
+```
+
+AWS credentials use the normal boto3 environment/default credential chain.
+
 Do not commit `.env`; it is ignored by `.gitignore` and `.dockerignore`.
 
 ## Run With Docker Compose
@@ -80,10 +90,11 @@ For normal use, prefer Docker Compose because it wires the frontend to the API s
 
 ## Frontend
 
-The Streamlit app supports both workflows:
+The Streamlit app supports these workflows:
 
 - `Summarise`: provide one lease using pasted text or a `.txt`, `.pdf`, or `.docx` upload
 - `Compare`: provide Lease A and Lease B, each using pasted text or a `.txt`, `.pdf`, or `.docx` upload
+- `S3 Leases`: select uploaded lease files from the configured S3 bucket/prefix
 
 You do not need to both paste text and upload a file. Select one input source per lease. Mixed compare inputs work too, for example Lease A pasted as text and Lease B uploaded as a PDF.
 
@@ -129,6 +140,31 @@ JSON text request:
 }
 ```
 
+### `GET /s3/leases`
+
+Lists supported `.txt`, `.pdf`, and `.docx` lease files from the configured S3 prefix.
+
+### `POST /summarise-s3`
+
+JSON S3 request:
+
+```json
+{
+  "key": "sample_leases/valid_lease_a.txt"
+}
+```
+
+### `POST /compare-s3`
+
+JSON S3 request:
+
+```json
+{
+  "lease_a_key": "sample_leases/valid_lease_a.txt",
+  "lease_b_key": "sample_leases/valid_lease_b.txt"
+}
+```
+
 All successful responses include grounded extraction results, guardrail verification checks, and warnings for unsupported extracted values. The backend runs extraction first, then guardrail verification, and only returns the response after verification is complete. `/compare` summarises and verifies both leases before asking Azure OpenAI for structured differences.
 
 Both summarisation and comparison reject lease text under 100 words with HTTP `422`. Unsupported file types and files with no extractable text also return HTTP `422`.
@@ -165,3 +201,5 @@ Sample lease files are available in `sample_leases/`, including short valid fixt
 
 Most sample leases are available as `.txt`, `.docx`, and `.pdf` so both text and document-upload paths can be tested.
 
+## LangFuse
+Install the Langfuse AI skill from github.com/langfuse/skills and use it to add tracing to this application with Langfuse following best practices.

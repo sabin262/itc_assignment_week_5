@@ -10,6 +10,21 @@ from frontend.settings import API_BASE_URL, REQUEST_TIMEOUT_SECONDS
 FilePart = tuple[str, bytes, str]
 
 
+def call_api_get(path: str) -> list[dict[str, Any]] | dict[str, Any] | None:
+    url = f"{API_BASE_URL}{path}"
+    try:
+        response = httpx.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+    except httpx.RequestError as exc:
+        st.error(f"Could not reach API at {API_BASE_URL}: {exc}")
+        return None
+
+    if response.status_code >= 400:
+        render_api_error(response)
+        return None
+
+    return response.json()
+
+
 def call_api(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     url = f"{API_BASE_URL}{path}"
     try:

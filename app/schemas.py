@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from enum import Enum
 from typing import Any, Literal, TypeAlias
 
@@ -37,6 +38,39 @@ class CompareRequest(BaseModel):
     @classmethod
     def validate_minimum_words(cls, value: str) -> str:
         return validate_lease_text(value)
+
+
+def validate_s3_key(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("S3 key is required.")
+    return cleaned
+
+
+class S3LeaseRequest(BaseModel):
+    key: str = Field(..., description="S3 object key for the lease file.")
+
+    @field_validator("key")
+    @classmethod
+    def validate_key(cls, value: str) -> str:
+        return validate_s3_key(value)
+
+
+class CompareS3Request(BaseModel):
+    lease_a_key: str = Field(..., description="S3 object key for the first lease.")
+    lease_b_key: str = Field(..., description="S3 object key for the second lease.")
+
+    @field_validator("lease_a_key", "lease_b_key")
+    @classmethod
+    def validate_key(cls, value: str) -> str:
+        return validate_s3_key(value)
+
+
+class S3LeaseFile(BaseModel):
+    key: str
+    filename: str
+    size: int
+    last_modified: datetime | None = None
 
 
 class LeaseExtraction(BaseModel):

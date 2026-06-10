@@ -4,16 +4,18 @@ from docx import Document
 from fastapi.testclient import TestClient
 
 from app.document_parser import extract_text_from_file
-from app.main import app, get_lease_service_factory
+from app.main import app, get_lease_service_factory, get_s3_storage_factory
 from app.schemas import (
     GuardrailResult,
     LeaseComparison,
     LeaseDifference,
     LeaseExtraction,
+    S3LeaseFile,
     SummariseResponse,
     VerificationItem,
     VerificationStatus,
 )
+from app.s3_storage import S3InvalidKeyError, S3ObjectNotFoundError
 
 
 def make_lease_text(marker: str = "standard") -> str:
@@ -113,11 +115,49 @@ class FakeLeaseService:
         }
 
 
+class FakeS3LeaseStorage:
+    def __init__(self) -> None:
+        self._files = {
+            "sample_leases/valid_lease_a.txt": make_lease_text("s3-a").encode("utf-8"),
+            "sample_leases/valid_lease_b.txt": make_lease_text("s3-b").encode("utf-8"),
+        }
+
+    def list_lease_files(self) -> list[S3LeaseFile]:
+        return [
+            S3LeaseFile(
+                key="sample_leases/valid_lease_a.txt",
+                filename="valid_lease_a.txt",
+                size=len(self._files["sample_leases/valid_lease_a.txt"]),
+                last_modified=None,
+            ),
+            S3LeaseFile(
+                key="sample_leases/valid_lease_b.txt",
+                filename="valid_lease_b.txt",
+                size=len(self._files["sample_leases/valid_lease_b.txt"]),
+                last_modified=None,
+            ),
+        ]
+
+    def get_file(self, key: str) -> tuple[str, bytes]:
+        if not key.startswith("sample_leases/"):
+            raise S3InvalidKeyError("S3 key must be inside the configured S3_PREFIX.")
+        if not key.endswith((".txt", ".pdf", ".docx")):
+            raise S3InvalidKeyError("Unsupported file type. Use .docx, .pdf, .txt.")
+        if key not in self._files:
+            raise S3ObjectNotFoundError(f"S3 lease file was not found: {key}")
+        return key.rsplit("/", 1)[-1], self._files[key]
+
+
 def override_service_factory():
     return FakeLeaseService
 
 
+def override_s3_storage_factory():
+    return FakeS3LeaseStorage
+
+
 app.dependency_overrides[get_lease_service_factory] = override_service_factory
+app.dependency_overrides[get_s3_storage_factory] = override_s3_storage_factory
 client = TestClient(app)
 
 
@@ -221,3 +261,67 @@ def test_compare_returns_structured_differences():
     body = response.json()
     assert body["comparison"]["summary"] == "Lease B has a higher rent and longer notice period."
     assert body["comparison"]["differences"][0]["field_name"] == "monthly_rent_amount"
+
+
+def test_s3_leases_lists_available_files():
+    response = client.get("/s3/leases")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["key"] for item in body] == [
+        "sample_leases/valid_lease_a.txt",
+        "sample_leases/valid_lease_b.txt",
+    ]
+
+
+def test_summarise_s3_lease():
+    response = client.post(
+        "/summarise-s3",
+        json={"key": "sample_leases/valid_lease_a.txt"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["extraction"]["tenant_name"] == "Alex Rivera"
+
+
+def test_compare_s3_leases():
+    response = client.post(
+        "/compare-s3",
+        json={
+            "lease_a_key": "sample_leases/valid_lease_a.txt",
+            "lease_b_key": "sample_leases/valid_lease_b.txt",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["comparison"]["differences"][0]["field_name"] == "monthly_rent_amount"
+
+
+def test_summarise_s3_returns_404_when_key_missing():
+    response = client.post(
+        "/summarise-s3",
+        json={"key": "sample_leases/missing.txt"},
+    )
+
+    assert response.status_code == 404
+    assert "S3 lease file was not found" in response.text
+
+
+def test_summarise_s3_rejects_unsupported_file_type():
+    response = client.post(
+        "/summarise-s3",
+        json={"key": "sample_leases/lease.rtf"},
+    )
+
+    assert response.status_code == 422
+    assert "Unsupported file type" in response.text
+
+
+def test_summarise_s3_blocks_keys_outside_configured_prefix():
+    response = client.post(
+        "/summarise-s3",
+        json={"key": "other_prefix/valid_lease_a.txt"},
+    )
+
+    assert response.status_code == 422
+    assert "configured S3_PREFIX" in response.text
