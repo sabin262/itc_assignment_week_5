@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 MIN_LEASE_WORDS = 100
@@ -71,6 +71,100 @@ class S3LeaseFile(BaseModel):
     filename: str
     size: int
     last_modified: datetime | None = None
+
+
+def validate_question(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("Question is required.")
+    return cleaned
+
+
+class RAGStatusResponse(BaseModel):
+    collection_name: str
+    indexed_lease_count: int
+    chunk_count: int
+    last_indexed_at: str | None = None
+
+
+class RAGIndexResponse(BaseModel):
+    indexed_lease_count: int
+    indexed_chunk_count: int
+    skipped_files: list[str] = Field(default_factory=list)
+    failed_files: list[str] = Field(default_factory=list)
+
+
+class RAGSearchRequest(BaseModel):
+    question: str
+    top_k: int = Field(default=5, ge=1, le=20)
+
+    @field_validator("question")
+    @classmethod
+    def validate_search_question(cls, value: str) -> str:
+        return validate_question(value)
+
+
+class RAGSearchMatch(BaseModel):
+    key: str
+    filename: str
+    snippet: str
+    score: float | None = None
+    chunk_index: int
+
+
+class RAGSearchResponse(BaseModel):
+    question: str
+    matches: list[RAGSearchMatch]
+
+
+class RAGChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, value: str) -> str:
+        return validate_question(value)
+
+
+class RAGChatRequest(BaseModel):
+    question: str
+    lease_keys: list[str] = Field(default_factory=list)
+    history: list[RAGChatMessage] = Field(default_factory=list)
+    top_k: int = Field(default=5, ge=1, le=20)
+
+    @field_validator("question")
+    @classmethod
+    def validate_chat_question(cls, value: str) -> str:
+        return validate_question(value)
+
+    @field_validator("lease_keys")
+    @classmethod
+    def validate_lease_keys(cls, value: list[str]) -> list[str]:
+        return [validate_s3_key(key) for key in value]
+
+    @model_validator(mode="after")
+    def limit_history(self) -> "RAGChatRequest":
+        self.history = self.history[-10:]
+        return self
+
+
+class RAGCitation(BaseModel):
+    key: str
+    filename: str
+    snippet: str
+    chunk_index: int
+
+
+class RAGChatAnswer(BaseModel):
+    answer: str
+    citations: list[RAGCitation] = Field(default_factory=list)
+
+
+class RAGChatResponse(BaseModel):
+    question: str
+    answer: str
+    citations: list[RAGCitation]
 
 
 class LeaseExtraction(BaseModel):

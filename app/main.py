@@ -4,7 +4,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from pydantic import ValidationError
 
-from app.config import get_s3_settings, get_settings
+from app.config import get_rag_settings, get_s3_settings, get_settings
 from app.document_parser import DocumentParseError, extract_text_from_file
 from app.llm_client import AzureLeaseLLMClient, LLMResponseError
 from app.schemas import (
@@ -12,10 +12,24 @@ from app.schemas import (
     CompareRequest,
     CompareResponse,
     LeaseTextRequest,
+    RAGChatRequest,
+    RAGChatResponse,
+    RAGIndexResponse,
+    RAGSearchRequest,
+    RAGSearchResponse,
+    RAGStatusResponse,
     S3LeaseFile,
     S3LeaseRequest,
     SummariseResponse,
     validate_lease_text,
+)
+from app.rag_service import (
+    RAGConfigurationError,
+    RAGError,
+    RAGInvalidKeyError,
+    RAGLeaseNotIndexedError,
+    RAGService,
+    create_rag_service as build_rag_service,
 )
 from app.s3_storage import (
     S3ConfigurationError,
@@ -47,12 +61,24 @@ def create_s3_storage() -> S3LeaseStorage:
     )
 
 
+def create_rag_service() -> RAGService:
+    return build_rag_service(
+        settings=get_settings(),
+        rag_settings=get_rag_settings(),
+        s3_settings=get_s3_settings(),
+    )
+
+
 def get_lease_service_factory() -> Callable[[], LeaseSummariserService]:
     return create_lease_service
 
 
 def get_s3_storage_factory() -> Callable[[], S3LeaseStorage]:
     return create_s3_storage
+
+
+def get_rag_service_factory() -> Callable[[], RAGService]:
+    return create_rag_service
 
 
 LeaseServiceFactoryDependency = Annotated[
@@ -63,6 +89,11 @@ LeaseServiceFactoryDependency = Annotated[
 S3StorageFactoryDependency = Annotated[
     Callable[[], S3LeaseStorage],
     Depends(get_s3_storage_factory),
+]
+
+RAGServiceFactoryDependency = Annotated[
+    Callable[[], RAGService],
+    Depends(get_rag_service_factory),
 ]
 
 
@@ -140,6 +171,85 @@ def compare_s3_leases(
     return _compare_text(lease_a_text, lease_b_text, service_factory)
 
 
+@app.post("/summarise-indexed", response_model=SummariseResponse)
+def summarise_indexed_lease(
+    request: S3LeaseRequest,
+    service_factory: LeaseServiceFactoryDependency,
+    rag_service_factory: RAGServiceFactoryDependency,
+) -> SummariseResponse:
+    lease_text = _extract_indexed_text(request.key, rag_service_factory)
+    return _summarise_text(lease_text, service_factory)
+
+
+@app.post("/compare-indexed", response_model=CompareResponse)
+def compare_indexed_leases(
+    request: CompareS3Request,
+    service_factory: LeaseServiceFactoryDependency,
+    rag_service_factory: RAGServiceFactoryDependency,
+) -> CompareResponse:
+    lease_a_text = _extract_indexed_text(request.lease_a_key, rag_service_factory)
+    lease_b_text = _extract_indexed_text(request.lease_b_key, rag_service_factory)
+    return _compare_text(lease_a_text, lease_b_text, service_factory)
+
+
+@app.get("/rag/status", response_model=RAGStatusResponse)
+def rag_status(
+    rag_service_factory: RAGServiceFactoryDependency,
+) -> RAGStatusResponse:
+    try:
+        return rag_service_factory().status()
+    except (ValidationError, RAGConfigurationError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except RAGError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/rag/index", response_model=RAGIndexResponse)
+def index_s3_leases_for_rag(
+    rag_service_factory: RAGServiceFactoryDependency,
+    s3_storage_factory: S3StorageFactoryDependency,
+) -> RAGIndexResponse:
+    try:
+        return rag_service_factory().index_s3_leases(s3_storage_factory())
+    except (ValidationError, RAGConfigurationError, S3ConfigurationError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except S3StorageError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except RAGError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/rag/search", response_model=RAGSearchResponse)
+def search_rag_leases(
+    request: RAGSearchRequest,
+    rag_service_factory: RAGServiceFactoryDependency,
+) -> RAGSearchResponse:
+    try:
+        return rag_service_factory().search(request.question, request.top_k)
+    except (ValidationError, RAGConfigurationError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except RAGError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/rag/chat", response_model=RAGChatResponse)
+def chat_with_rag_leases(
+    request: RAGChatRequest,
+    rag_service_factory: RAGServiceFactoryDependency,
+) -> RAGChatResponse:
+    try:
+        return rag_service_factory().chat(
+            question=request.question,
+            lease_keys=request.lease_keys,
+            history=request.history,
+            top_k=request.top_k,
+        )
+    except (ValidationError, RAGConfigurationError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except (RAGError, LLMResponseError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 def _summarise_text(
     lease_text: str,
     service_factory: Callable[[], LeaseSummariserService],
@@ -186,6 +296,22 @@ async def _extract_upload_text(file: UploadFile) -> str:
         return extract_text_from_file(file.filename or "", content)
     except DocumentParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _extract_indexed_text(
+    key: str,
+    rag_service_factory: Callable[[], RAGService],
+) -> str:
+    try:
+        return rag_service_factory().lease_text_from_index(key)
+    except RAGInvalidKeyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RAGLeaseNotIndexedError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValidationError, RAGConfigurationError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except RAGError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def _extract_s3_text(
