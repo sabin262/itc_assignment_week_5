@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 import threading
 from uuid import uuid4
 from typing import Annotated
+from app.langfuse_client import get_langfuse_client
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile
 from pydantic import ValidationError
@@ -58,7 +59,10 @@ _INDEX_JOB_STATE = RAGIndexJobStatus(status="idle")
 
 def create_lease_service() -> LeaseSummariserService:
     settings = get_settings()
-    return LeaseSummariserService(AzureLeaseLLMClient(settings))
+    return LeaseSummariserService(
+        AzureLeaseLLMClient(settings),
+        langfuse=get_langfuse_client(),
+    )
 
 
 def create_s3_storage() -> S3LeaseStorage:
@@ -74,6 +78,7 @@ def create_rag_service() -> RAGService:
         settings=get_settings(),
         rag_settings=get_rag_settings(),
         s3_settings=get_s3_settings(),
+        langfuse=get_langfuse_client(),
     )
 
 
