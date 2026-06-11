@@ -171,15 +171,27 @@ class FakeRAGService:
             indexed_lease_count=2,
             chunk_count=4,
             last_indexed_at="2026-01-01T00:00:00+00:00",
+            indexed_summary_count=2,
         )
 
-    def index_s3_leases(self, s3_storage) -> RAGIndexResponse:
+    def index_s3_leases(
+        self,
+        s3_storage,
+        lease_service,
+        progress_callback=None,
+    ) -> RAGIndexResponse:
         assert len(s3_storage.list_lease_files()) == 2
+        assert lease_service.summarise(make_lease_text()).extraction.tenant_name == "Alex Rivera"
+        if progress_callback:
+            progress_callback(1, 3, "Processing valid_lease_a.txt.", "sample_leases/valid_lease_a.txt")
+            progress_callback(3, 3, "Indexing completed.", None)
         return RAGIndexResponse(
             indexed_lease_count=2,
             indexed_chunk_count=4,
             skipped_files=[],
             failed_files=[],
+            summarised_lease_count=2,
+            summary_failed_files=[],
         )
 
     def search(self, question: str, top_k: int) -> RAGSearchResponse:
@@ -459,6 +471,7 @@ def test_rag_status_returns_index_state():
     assert body["collection_name"] == "lease_chunks"
     assert body["indexed_lease_count"] == 2
     assert body["chunk_count"] == 4
+    assert body["indexed_summary_count"] == 2
 
 
 def test_rag_index_indexes_s3_leases():
@@ -466,8 +479,21 @@ def test_rag_index_indexes_s3_leases():
 
     assert response.status_code == 200
     body = response.json()
-    assert body["indexed_lease_count"] == 2
-    assert body["indexed_chunk_count"] == 4
+    assert body["status"] in {"running", "completed"}
+    assert body["job_id"]
+    assert "progress_percent" in body
+
+    status_response = client.get("/rag/index/status")
+    assert status_response.status_code == 200
+    status_body = status_response.json()
+    assert status_body["status"] == "completed"
+    assert status_body["progress_percent"] == 1.0
+    assert status_body["message"] == "Indexing completed."
+    result = status_body["result"]
+    assert result["indexed_lease_count"] == 2
+    assert result["indexed_chunk_count"] == 4
+    assert result["summarised_lease_count"] == 2
+    assert result["summary_failed_files"] == []
 
 
 def test_rag_search_returns_matching_lease_snippets():

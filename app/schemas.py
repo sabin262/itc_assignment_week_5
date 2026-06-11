@@ -85,6 +85,7 @@ class RAGStatusResponse(BaseModel):
     indexed_lease_count: int
     chunk_count: int
     last_indexed_at: str | None = None
+    indexed_summary_count: int = 0
 
 
 class RAGIndexResponse(BaseModel):
@@ -92,6 +93,22 @@ class RAGIndexResponse(BaseModel):
     indexed_chunk_count: int
     skipped_files: list[str] = Field(default_factory=list)
     failed_files: list[str] = Field(default_factory=list)
+    summarised_lease_count: int = 0
+    summary_failed_files: list[str] = Field(default_factory=list)
+
+
+class RAGIndexJobStatus(BaseModel):
+    job_id: str | None = None
+    status: Literal["idle", "running", "completed", "failed"]
+    started_at: str | None = None
+    finished_at: str | None = None
+    result: RAGIndexResponse | None = None
+    error: str | None = None
+    progress_current: int = 0
+    progress_total: int = 0
+    progress_percent: float = 0.0
+    message: str | None = None
+    current_key: str | None = None
 
 
 class RAGSearchRequest(BaseModel):
@@ -154,6 +171,7 @@ class RAGCitation(BaseModel):
     filename: str
     snippet: str
     chunk_index: int
+    source_type: Literal["chunk", "summary"] = "chunk"
 
 
 class RAGChatAnswer(BaseModel):
