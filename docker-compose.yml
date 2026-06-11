@@ -13,6 +13,8 @@ services:
         required: false
     environment:
       PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./chroma_db:/app/chroma_db
     healthcheck:
       test:
         [
@@ -52,3 +54,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+volumes:
+  chroma_data:

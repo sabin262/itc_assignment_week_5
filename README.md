@@ -34,7 +34,7 @@ AZURE_OPENAI_API_VERSION=
 AZURE_OPENAI_DEPLOYMENT=
 ```
 
-Optional S3 variables for the S3 lease tab and S3 API endpoints:
+Optional S3 variables for the S3 lease page and S3 API endpoints:
 
 ```text
 S3_BUCKET_NAME=
@@ -43,6 +43,16 @@ AWS_REGION=
 ```
 
 AWS credentials use the normal boto3 environment/default credential chain.
+
+Optional RAG variables for S3 search and chat:
+
+```text
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=
+CHROMA_PERSIST_DIR=./chroma_db
+CHROMA_COLLECTION_NAME=lease_chunks
+```
+
+`AZURE_OPENAI_EMBEDDING_DEPLOYMENT` is required when using the RAG index, search, or chat endpoints. ChromaDB stores local vector index data in `CHROMA_PERSIST_DIR`; Docker Compose mounts `/app/chroma_db` as a named volume so indexed chunks survive API container restarts.
 
 Do not commit `.env`; it is ignored by `.gitignore` and `.dockerignore`.
 
@@ -90,13 +100,14 @@ For normal use, prefer Docker Compose because it wires the frontend to the API s
 
 ## Frontend
 
-The Streamlit app supports these workflows:
+The Streamlit app has a sidebar workspace selector:
 
-- `Summarise`: provide one lease using pasted text or a `.txt`, `.pdf`, or `.docx` upload
-- `Compare`: provide Lease A and Lease B, each using pasted text or a `.txt`, `.pdf`, or `.docx` upload
-- `S3 Leases`: select uploaded lease files from the configured S3 bucket/prefix
+- `Local Leases`: tabs for `Summarise` and `Compare` using pasted text or local `.txt`, `.pdf`, or `.docx` uploads
+- `S3 Leases`: tabs for `Summarise`, `Compare`, `Index`, `Search`, and `Chat` using leases from the configured S3 bucket/prefix
 
-You do not need to both paste text and upload a file. Select one input source per lease. Mixed compare inputs work too, for example Lease A pasted as text and Lease B uploaded as a PDF.
+On the local page, you do not need to both paste text and upload a file. Select one input source per lease. Mixed compare inputs work too, for example Lease A pasted as text and Lease B uploaded as a PDF.
+
+On the S3 page, run `Index S3 Leases` after uploading or changing S3 lease files. `Search` queries all indexed leases. `Chat` can filter to selected S3 leases and keeps the current session's Q&A history in Streamlit session state. The S3 summarise and compare tabs can use either live S3 files or the already indexed lease text stored in ChromaDB.
 
 Guardrail results are shown before the extracted summary, lease details, or comparison table. If Azure OpenAI flags unsupported extracted values, the frontend displays those warnings first so you can review grounding before relying on the rest of the response.
 
@@ -165,7 +176,69 @@ JSON S3 request:
 }
 ```
 
+### `POST /summarise-indexed`
+
+JSON indexed lease request:
+
+```json
+{
+  "key": "sample_leases/valid_lease_a.txt"
+}
+```
+
+Loads the lease text from indexed ChromaDB chunks instead of downloading the file from S3, then reuses the normal structured summary pipeline.
+
+### `POST /compare-indexed`
+
+JSON indexed lease request:
+
+```json
+{
+  "lease_a_key": "sample_leases/valid_lease_a.txt",
+  "lease_b_key": "sample_leases/valid_lease_b.txt"
+}
+```
+
+Loads both lease texts from indexed ChromaDB chunks instead of downloading the files from S3, then reuses the normal structured comparison pipeline.
+
+### `GET /rag/status`
+
+Returns Chroma collection status, indexed lease count, chunk count, and the last indexed timestamp.
+
+### `POST /rag/index`
+
+Indexes all supported S3 lease files under the configured bucket/prefix. Re-indexing clears stale chunks for that S3 prefix before inserting fresh chunks.
+
+### `POST /rag/search`
+
+JSON RAG search request:
+
+```json
+{
+  "question": "Which leases mention pets?",
+  "top_k": 5
+}
+```
+
+### `POST /rag/chat`
+
+JSON RAG chat request:
+
+```json
+{
+  "question": "When is rent due?",
+  "lease_keys": ["sample_leases/valid_lease_a.txt"],
+  "history": [
+    {"role": "user", "content": "What is the rent?"},
+    {"role": "assistant", "content": "The monthly rent is 1,500 pounds."}
+  ],
+  "top_k": 5
+}
+```
+
 All successful responses include grounded extraction results, guardrail verification checks, and warnings for unsupported extracted values. The backend runs extraction first, then guardrail verification, and only returns the response after verification is complete. `/compare` summarises and verifies both leases before asking Azure OpenAI for structured differences.
+
+RAG search and chat do not replace the structured summary pipeline. They use S3 lease chunks for lookup and Q&A, while `/summarise`, `/summarise-text`, `/summarise-s3`, `/compare`, `/compare-text`, and `/compare-s3` keep the existing extraction and comparison flow.
 
 Both summarisation and comparison reject lease text under 100 words with HTTP `422`. Unsupported file types and files with no extractable text also return HTTP `422`.
 
@@ -193,8 +266,7 @@ $env:API_BASE_URL = "http://localhost:8000"
 ## Testing
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/test_app.py -q
-```
+.\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
 Sample lease files are available in `sample_leases/`, including short valid fixtures, long comprehensive fixtures, and dense legal-language fixtures.
