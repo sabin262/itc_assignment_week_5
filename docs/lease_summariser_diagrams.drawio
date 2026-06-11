@@ -1,6 +1,6 @@
-<mxfile host="app.diagrams.net" modified="2026-06-07T00:00:00.000Z" agent="Codex" version="24.7.17" type="device">
+<mxfile host="app.diagrams.net" modified="2026-06-10T00:00:00.000Z" agent="Codex" version="24.7.17" type="device">
   <diagram id="architecture-diagram" name="Architecture">
-    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+    <mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -10,22 +10,22 @@
         <mxCell id="arch-client-boundary" value="User Device" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
           <mxGeometry x="40" y="110" width="220" height="200" as="geometry" />
         </mxCell>
-        <mxCell id="arch-user" value="User&#xa;uploads .txt/.pdf/.docx&#xa;or pastes lease text" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;" vertex="1" parent="1">
+        <mxCell id="arch-user" value="User&#xa;Local Leases: paste/upload&#xa;S3 Leases: S3 summary, compare, index, search, chat" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;" vertex="1" parent="1">
           <mxGeometry x="75" y="165" width="150" height="95" as="geometry" />
         </mxCell>
         <mxCell id="arch-compose-boundary" value="Docker Compose" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
-          <mxGeometry x="310" y="85" width="760" height="620" as="geometry" />
+          <mxGeometry x="310" y="85" width="760" height="790" as="geometry" />
         </mxCell>
         <mxCell id="arch-frontend-container" value="frontend service&#xa;Streamlit container&#xa;port 8501" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="360" y="150" width="220" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="arch-frontend-modules" value="Frontend modules&#xa;streamlit_app.py&#xa;tabs.py / renderers.py&#xa;lease_inputs.py&#xa;api_client.py / error_utils.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf6e8;strokeColor=#82b366;" vertex="1" parent="1">
+        <mxCell id="arch-frontend-modules" value="Frontend modules&#xa;sidebar page selector&#xa;Local tabs: Summarise / Compare&#xa;S3 tabs: Summarise / Compare / Index / Search / Chat&#xa;api_client.py / renderers.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf6e8;strokeColor=#82b366;" vertex="1" parent="1">
           <mxGeometry x="360" y="300" width="220" height="150" as="geometry" />
         </mxCell>
         <mxCell id="arch-api-container" value="api service&#xa;FastAPI container&#xa;port 8000" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="680" y="130" width="300" height="90" as="geometry" />
         </mxCell>
-        <mxCell id="arch-routes" value="Routes&#xa;/summarise&#xa;/summarise-text&#xa;/compare&#xa;/compare-text&#xa;/health" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf2ff;strokeColor=#6c8ebf;" vertex="1" parent="1">
+        <mxCell id="arch-routes" value="Routes&#xa;local: /summarise, /summarise-text, /compare, /compare-text&#xa;S3: /s3/leases, /summarise-s3, /compare-s3&#xa;RAG: /rag/status, /rag/index, /rag/search, /rag/chat" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf2ff;strokeColor=#6c8ebf;" vertex="1" parent="1">
           <mxGeometry x="650" y="250" width="160" height="140" as="geometry" />
         </mxCell>
         <mxCell id="arch-parser" value="Document parser&#xa;.txt: UTF-8 text&#xa;.pdf: pypdf text extraction&#xa;.docx: python-docx" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf2ff;strokeColor=#6c8ebf;" vertex="1" parent="1">
@@ -37,19 +37,34 @@
         <mxCell id="arch-service" value="LeaseSummariserService&#xa;orchestrates extraction, guardrails, comparison" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="850" y="430" width="180" height="100" as="geometry" />
         </mxCell>
-        <mxCell id="arch-llm-client" value="AzureLeaseLLMClient&#xa;temperature 0.0&#xa;JSON-only prompts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
-          <mxGeometry x="760" y="570" width="180" height="100" as="geometry" />
+        <mxCell id="arch-rag-service" value="RAGService&#xa;indexes S3 leases&#xa;searches chunks&#xa;chat uses selected leases + session history" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="650" y="560" width="180" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="arch-env" value=".env configuration&#xa;AZURE_OPENAI_API_KEY&#xa;AZURE_OPENAI_ENDPOINT&#xa;AZURE_OPENAI_API_VERSION&#xa;AZURE_OPENAI_DEPLOYMENT" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
-          <mxGeometry x="390" y="520" width="250" height="130" as="geometry" />
+        <mxCell id="arch-llm-client" value="Azure OpenAI clients&#xa;summary/compare chat deployment&#xa;RAG embedding deployment&#xa;structured JSON responses" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="850" y="570" width="180" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-chroma" value="ChromaDB&#xa;PersistentClient&#xa;collection: lease_chunks&#xa;Docker volume: /app/chroma_db" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="650" y="720" width="180" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-s3-storage" value="S3LeaseStorage&#xa;lists supported keys&#xa;downloads .txt/.pdf/.docx&#xa;blocks keys outside prefix" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf2ff;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="850" y="720" width="180" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-env" value=".env configuration&#xa;Azure chat + embedding deployments&#xa;S3_BUCKET_NAME / S3_PREFIX&#xa;AWS credential chain&#xa;CHROMA_PERSIST_DIR / collection name" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="390" y="520" width="220" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-s3-boundary" value="External Storage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="1130" y="80" width="220" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-s3" value="Amazon S3&#xa;configured bucket/prefix&#xa;sample_leases/" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="115" width="160" height="60" as="geometry" />
         </mxCell>
         <mxCell id="arch-azure-boundary" value="External Service" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
           <mxGeometry x="1130" y="210" width="220" height="260" as="geometry" />
         </mxCell>
-        <mxCell id="arch-azure" value="Azure OpenAI&#xa;deployment" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="arch-azure" value="Azure OpenAI&#xa;chat deployment&#xa;embedding deployment" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="1160" y="290" width="160" height="90" as="geometry" />
         </mxCell>
-        <mxCell id="arch-tests" value="Tests&#xa;mocked FastAPI tests&#xa;parser tests&#xa;frontend renderer/error tests&#xa;custom pass-percentage summary" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+        <mxCell id="arch-tests" value="Tests&#xa;mocked FastAPI tests&#xa;S3 storage + RAG service tests&#xa;frontend page/tab tests&#xa;strict JSON Schema tests" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
           <mxGeometry x="1110" y="560" width="230" height="120" as="geometry" />
         </mxCell>
         <mxCell id="arch-edge-user-frontend" value="browser UI" style="endArrow=block;html=1;rounded=0;strokeWidth=2;" edge="1" parent="1" source="arch-user" target="arch-frontend-container">
@@ -67,6 +82,12 @@
         <mxCell id="arch-edge-routes-parser" value="document endpoints" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-routes" target="arch-parser">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
+        <mxCell id="arch-edge-routes-s3-storage" value="S3 endpoints" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-routes" target="arch-s3-storage">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-routes-rag" value="RAG endpoints" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-routes" target="arch-rag-service">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
         <mxCell id="arch-edge-routes-validation" value="text endpoints" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-routes" target="arch-validation">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
@@ -79,10 +100,28 @@
         <mxCell id="arch-edge-service-client" value="extract, verify, compare" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-service" target="arch-llm-client">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
+        <mxCell id="arch-edge-rag-client" value="embed query/chunks; answer chat" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-rag-service" target="arch-llm-client">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-rag-chroma" value="upsert/query chunks" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-rag-service" target="arch-chroma">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-rag-s3-storage" value="index downloads" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-rag-service" target="arch-s3-storage">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-s3-parser" value="downloaded file bytes" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="arch-s3-storage" target="arch-parser">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
         <mxCell id="arch-edge-env-client" value="settings" style="endArrow=block;html=1;rounded=0;dashed=1;" edge="1" parent="1" source="arch-env" target="arch-llm-client">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
+        <mxCell id="arch-edge-env-rag" value="S3 + Chroma settings" style="endArrow=block;html=1;rounded=0;dashed=1;" edge="1" parent="1" source="arch-env" target="arch-rag-service">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
         <mxCell id="arch-edge-client-azure" value="Azure OpenAI API calls" style="endArrow=block;html=1;rounded=0;strokeWidth=2;" edge="1" parent="1" source="arch-llm-client" target="arch-azure">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arch-edge-s3-storage-s3" value="list and download" style="endArrow=block;html=1;rounded=0;strokeWidth=2;" edge="1" parent="1" source="arch-s3-storage" target="arch-s3">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="arch-edge-api-frontend-return" value="structured JSON response" style="endArrow=block;html=1;rounded=0;dashed=1;" edge="1" parent="1" source="arch-api-container" target="arch-frontend-container">
@@ -95,7 +134,7 @@
     </mxGraphModel>
   </diagram>
   <diagram id="workflow-diagram" name="Workflow">
-    <mxGraphModel dx="1400" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="2050" math="0" shadow="0">
+    <mxGraphModel dx="1400" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="2400" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -105,7 +144,7 @@
         <mxCell id="flow-start" value="Start&#xa;User opens Streamlit" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="610" y="80" width="180" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="flow-mode" value="Choose workflow" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="flow-mode" value="Choose page and tab" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="620" y="190" width="160" height="100" as="geometry" />
         </mxCell>
         <mxCell id="flow-summarise-input" value="Summarise&#xa;provide one lease" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
@@ -171,6 +210,27 @@
         <mxCell id="flow-end" value="End" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="675" y="1890" width="150" height="60" as="geometry" />
         </mxCell>
+        <mxCell id="flow-s3-title" value="S3 and RAG Workflow" style="text;html=1;strokeColor=none;fillColor=none;fontSize=22;fontStyle=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="430" y="2020" width="540" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-s3-page" value="S3 Leases page&#xa;tabs: Summarise / Compare / Index / Search / Chat" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="2100" width="220" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-s3-summary-compare" value="S3 Summarise / Compare&#xa;/summarise-s3 and /compare-s3&#xa;download from S3, parse file, reuse structured summary pipeline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="330" y="2100" width="230" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-rag-index" value="Index&#xa;/rag/index&#xa;list S3 leases, parse, split into overlapping chunks, embed with Azure OpenAI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="600" y="2100" width="220" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-rag-store" value="ChromaDB&#xa;clear stale prefix chunks&#xa;upsert fresh lease chunks&#xa;persistent Docker volume" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="865" y="2100" width="190" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-rag-search" value="Search&#xa;/rag/search&#xa;embed question, query Chroma&#xa;return matching leases and snippets" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1085" y="2070" width="220" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-rag-chat" value="Chat&#xa;/rag/chat&#xa;selected lease keys + session history&#xa;structured answer with citations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1085" y="2210" width="220" height="100" as="geometry" />
+        </mxCell>
         <mxCell id="flow-edge-start-mode" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;" edge="1" parent="1" source="flow-start" target="flow-mode">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
@@ -178,6 +238,24 @@
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="flow-edge-mode-compare" value="Compare" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-mode" target="flow-compare-input">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-mode-s3-page" value="S3 Leases" style="endArrow=block;html=1;rounded=0;dashed=1;" edge="1" parent="1" source="flow-mode" target="flow-s3-page">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-s3-page-summary" value="S3 summary/compare tabs" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-s3-page" target="flow-s3-summary-compare">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-s3-page-index" value="Index tab" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-s3-page" target="flow-rag-index">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-index-store" value="embeddings + metadata" style="endArrow=block;html=1;rounded=0;strokeWidth=2;" edge="1" parent="1" source="flow-rag-index" target="flow-rag-store">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-store-search" value="retrieval" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-rag-store" target="flow-rag-search">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="flow-edge-store-chat" value="retrieved snippets" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-rag-store" target="flow-rag-chat">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="flow-edge-sum-input-type" value="" style="endArrow=block;html=1;rounded=0;" edge="1" parent="1" source="flow-summarise-input" target="flow-input-type-a">

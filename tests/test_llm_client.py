@@ -3,7 +3,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.config import Settings
-from app.llm_client import AzureLeaseLLMClient
+from app.llm_client import AzureLeaseLLMClient, _build_json_schema_response_format
+from app.schemas import RAGChatAnswer
 
 
 def test_llm_calls_use_matching_structured_response_schemas(monkeypatch):
@@ -88,6 +89,14 @@ def test_llm_calls_use_matching_structured_response_schemas(monkeypatch):
         assert response_format["type"] == "json_schema"
         assert response_format["json_schema"]["strict"] is True
         _assert_openai_strict_schema(response_format["json_schema"]["schema"])
+
+
+def test_rag_chat_answer_uses_strict_structured_response_schema():
+    response_format = _build_json_schema_response_format(RAGChatAnswer)
+
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    _assert_openai_strict_schema(response_format["json_schema"]["schema"])
 
 
 def _assert_openai_strict_schema(schema_node: Any) -> None:

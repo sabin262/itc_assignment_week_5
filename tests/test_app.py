@@ -4,12 +4,28 @@ from docx import Document
 from fastapi.testclient import TestClient
 
 from app.document_parser import extract_text_from_file
-from app.main import app, get_lease_service_factory, get_s3_storage_factory
+from app.main import (
+    app,
+    get_lease_service_factory,
+    get_rag_service_factory,
+    get_s3_storage_factory,
+)
+from app.rag_service import (
+    RAGConfigurationError,
+    RAGInvalidKeyError,
+    RAGLeaseNotIndexedError,
+)
 from app.schemas import (
     GuardrailResult,
     LeaseComparison,
     LeaseDifference,
     LeaseExtraction,
+    RAGChatResponse,
+    RAGCitation,
+    RAGIndexResponse,
+    RAGSearchMatch,
+    RAGSearchResponse,
+    RAGStatusResponse,
     S3LeaseFile,
     SummariseResponse,
     VerificationItem,
@@ -148,6 +164,66 @@ class FakeS3LeaseStorage:
         return key.rsplit("/", 1)[-1], self._files[key]
 
 
+class FakeRAGService:
+    def status(self) -> RAGStatusResponse:
+        return RAGStatusResponse(
+            collection_name="lease_chunks",
+            indexed_lease_count=2,
+            chunk_count=4,
+            last_indexed_at="2026-01-01T00:00:00+00:00",
+        )
+
+    def index_s3_leases(self, s3_storage) -> RAGIndexResponse:
+        assert len(s3_storage.list_lease_files()) == 2
+        return RAGIndexResponse(
+            indexed_lease_count=2,
+            indexed_chunk_count=4,
+            skipped_files=[],
+            failed_files=[],
+        )
+
+    def search(self, question: str, top_k: int) -> RAGSearchResponse:
+        assert question == "What is the monthly rent?"
+        assert top_k == 3
+        return RAGSearchResponse(
+            question=question,
+            matches=[
+                RAGSearchMatch(
+                    key="sample_leases/valid_lease_a.txt",
+                    filename="valid_lease_a.txt",
+                    snippet="Monthly rent is 1,500 pounds.",
+                    score=0.91,
+                    chunk_index=0,
+                )
+            ],
+        )
+
+    def lease_text_from_index(self, key: str) -> str:
+        if not key.startswith("sample_leases/"):
+            raise RAGInvalidKeyError("S3 key must be inside the configured S3_PREFIX.")
+        if key == "sample_leases/missing.txt":
+            raise RAGLeaseNotIndexedError(f"Indexed lease was not found: {key}")
+        return make_lease_text(f"indexed-{key}")
+
+    def chat(self, question: str, lease_keys, history, top_k: int) -> RAGChatResponse:
+        assert question == "When is rent due?"
+        assert lease_keys == ["sample_leases/valid_lease_a.txt"]
+        assert top_k == 5
+        assert [item.content for item in history] == ["What is the rent?"]
+        return RAGChatResponse(
+            question=question,
+            answer="Rent is due on the first day of each month.",
+            citations=[
+                RAGCitation(
+                    key="sample_leases/valid_lease_a.txt",
+                    filename="valid_lease_a.txt",
+                    snippet="Rent must be paid on the first day of each month.",
+                    chunk_index=0,
+                )
+            ],
+        )
+
+
 def override_service_factory():
     return FakeLeaseService
 
@@ -156,8 +232,13 @@ def override_s3_storage_factory():
     return FakeS3LeaseStorage
 
 
+def override_rag_service_factory():
+    return FakeRAGService
+
+
 app.dependency_overrides[get_lease_service_factory] = override_service_factory
 app.dependency_overrides[get_s3_storage_factory] = override_s3_storage_factory
+app.dependency_overrides[get_rag_service_factory] = override_rag_service_factory
 client = TestClient(app)
 
 
@@ -297,6 +378,29 @@ def test_compare_s3_leases():
     assert response.json()["comparison"]["differences"][0]["field_name"] == "monthly_rent_amount"
 
 
+def test_summarise_indexed_lease():
+    response = client.post(
+        "/summarise-indexed",
+        json={"key": "sample_leases/valid_lease_a.txt"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["extraction"]["tenant_name"] == "Alex Rivera"
+
+
+def test_compare_indexed_leases():
+    response = client.post(
+        "/compare-indexed",
+        json={
+            "lease_a_key": "sample_leases/valid_lease_a.txt",
+            "lease_b_key": "sample_leases/valid_lease_b.txt",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["comparison"]["differences"][0]["field_name"] == "monthly_rent_amount"
+
+
 def test_summarise_s3_returns_404_when_key_missing():
     response = client.post(
         "/summarise-s3",
@@ -325,3 +429,94 @@ def test_summarise_s3_blocks_keys_outside_configured_prefix():
 
     assert response.status_code == 422
     assert "configured S3_PREFIX" in response.text
+
+
+def test_summarise_indexed_returns_404_when_lease_not_indexed():
+    response = client.post(
+        "/summarise-indexed",
+        json={"key": "sample_leases/missing.txt"},
+    )
+
+    assert response.status_code == 404
+    assert "Indexed lease was not found" in response.text
+
+
+def test_summarise_indexed_blocks_keys_outside_configured_prefix():
+    response = client.post(
+        "/summarise-indexed",
+        json={"key": "other_prefix/valid_lease_a.txt"},
+    )
+
+    assert response.status_code == 422
+    assert "configured S3_PREFIX" in response.text
+
+
+def test_rag_status_returns_index_state():
+    response = client.get("/rag/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["collection_name"] == "lease_chunks"
+    assert body["indexed_lease_count"] == 2
+    assert body["chunk_count"] == 4
+
+
+def test_rag_index_indexes_s3_leases():
+    response = client.post("/rag/index")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["indexed_lease_count"] == 2
+    assert body["indexed_chunk_count"] == 4
+
+
+def test_rag_search_returns_matching_lease_snippets():
+    response = client.post(
+        "/rag/search",
+        json={"question": "What is the monthly rent?", "top_k": 3},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["matches"][0]["key"] == "sample_leases/valid_lease_a.txt"
+    assert body["matches"][0]["snippet"] == "Monthly rent is 1,500 pounds."
+
+
+def test_rag_chat_filters_to_selected_lease_and_accepts_history():
+    response = client.post(
+        "/rag/chat",
+        json={
+            "question": "When is rent due?",
+            "lease_keys": ["sample_leases/valid_lease_a.txt"],
+            "history": [{"role": "user", "content": "What is the rent?"}],
+            "top_k": 5,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == "Rent is due on the first day of each month."
+    assert body["citations"][0]["key"] == "sample_leases/valid_lease_a.txt"
+
+
+def test_rag_config_errors_return_clear_500_response():
+    def override_broken_rag_service_factory():
+        def broken_factory():
+            raise RAGConfigurationError(
+                "Azure OpenAI embedding deployment is not configured."
+            )
+
+        return broken_factory
+
+    app.dependency_overrides[get_rag_service_factory] = (
+        override_broken_rag_service_factory
+    )
+    try:
+        response = client.get("/rag/status")
+    finally:
+        app.dependency_overrides[get_rag_service_factory] = (
+            override_rag_service_factory
+        )
+
+    assert response.status_code == 500
+    assert "embedding deployment is not configured" in response.text
