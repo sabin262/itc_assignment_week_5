@@ -52,7 +52,7 @@ CHROMA_PERSIST_DIR=./chroma_db
 CHROMA_COLLECTION_NAME=lease_chunks
 ```
 
-`AZURE_OPENAI_EMBEDDING_DEPLOYMENT` is required when using the RAG index, search, or chat endpoints. ChromaDB stores local vector index data in `CHROMA_PERSIST_DIR`; Docker Compose mounts `/app/chroma_db` as a named volume so indexed chunks survive API container restarts.
+`AZURE_OPENAI_EMBEDDING_DEPLOYMENT` is required when using the RAG index, search, or chat endpoints. ChromaDB stores local vector index data in `CHROMA_PERSIST_DIR`; the RAG index also stores structured lease summaries in `lease_summaries.json` in the same directory. Docker Compose mounts `/app/chroma_db` as a named volume so indexed chunks and summaries survive API container restarts.
 
 Do not commit `.env`; it is ignored by `.gitignore` and `.dockerignore`.
 
@@ -107,7 +107,7 @@ The Streamlit app has a sidebar workspace selector:
 
 On the local page, you do not need to both paste text and upload a file. Select one input source per lease. Mixed compare inputs work too, for example Lease A pasted as text and Lease B uploaded as a PDF.
 
-On the S3 page, run `Index S3 Leases` after uploading or changing S3 lease files. `Search` queries all indexed leases. `Chat` can filter to selected S3 leases and keeps the current session's Q&A history in Streamlit session state. The S3 summarise and compare tabs can use either live S3 files or the already indexed lease text stored in ChromaDB.
+On the S3 page, run `Index S3 Leases` after uploading or changing S3 lease files. `Search` queries all indexed leases. `Chat` can filter to selected S3 leases and keeps the current session's Q&A history in Streamlit session state. Chat uses both structured lease summaries and retrieved chunks, so field-based comparisons such as cheapest rent can use the indexed summaries. The S3 summarise and compare tabs can use either live S3 files or the already indexed lease text stored in ChromaDB.
 
 Guardrail results are shown before the extracted summary, lease details, or comparison table. If Azure OpenAI flags unsupported extracted values, the frontend displays those warnings first so you can review grounding before relying on the rest of the response.
 
@@ -203,11 +203,15 @@ Loads both lease texts from indexed ChromaDB chunks instead of downloading the f
 
 ### `GET /rag/status`
 
-Returns Chroma collection status, indexed lease count, chunk count, and the last indexed timestamp.
+Returns Chroma collection status, indexed lease count, chunk count, indexed summary count, and the last indexed timestamp.
 
 ### `POST /rag/index`
 
-Indexes all supported S3 lease files under the configured bucket/prefix. Re-indexing clears stale chunks for that S3 prefix before inserting fresh chunks.
+Starts a background indexing job for all supported S3 lease files under the configured bucket/prefix. The request returns quickly with a job status instead of waiting for the full index to complete. Re-indexing clears stale chunks and stale structured summaries for that S3 prefix before inserting fresh data. Each successfully parsed lease is also summarised using the normal structured summary pipeline, including verification and warnings.
+
+### `GET /rag/index/status`
+
+Returns the current indexing job state: `idle`, `running`, `completed`, or `failed`. Running jobs include progress fields such as `progress_current`, `progress_total`, `progress_percent`, `message`, and `current_key`. Completed jobs include the index result counts, skipped files, failed files, summarised lease count, and summary failures.
 
 ### `POST /rag/search`
 
@@ -238,7 +242,7 @@ JSON RAG chat request:
 
 All successful responses include grounded extraction results, guardrail verification checks, and warnings for unsupported extracted values. The backend runs extraction first, then guardrail verification, and only returns the response after verification is complete. `/compare` summarises and verifies both leases before asking Azure OpenAI for structured differences.
 
-RAG search and chat do not replace the structured summary pipeline. They use S3 lease chunks for lookup and Q&A, while `/summarise`, `/summarise-text`, `/summarise-s3`, `/compare`, `/compare-text`, and `/compare-s3` keep the existing extraction and comparison flow.
+RAG search and chat do not replace the structured summary pipeline. Search uses S3 lease chunks for lookup. Chat uses indexed structured summaries plus retrieved chunks for Q&A, while `/summarise`, `/summarise-text`, `/summarise-s3`, `/compare`, `/compare-text`, and `/compare-s3` keep the existing extraction and comparison flow.
 
 Both summarisation and comparison reject lease text under 100 words with HTTP `422`. Unsupported file types and files with no extractable text also return HTTP `422`.
 

@@ -1,3 +1,5 @@
+import time
+
 import streamlit as st
 
 from frontend.api_client import call_api, call_api_files, call_api_get
@@ -201,11 +203,13 @@ def render_s3_compare_tab() -> None:
 def render_s3_index_tab() -> None:
     status = call_api_get("/rag/status")
     if isinstance(status, dict):
-        left, middle, right = st.columns(3)
+        left, middle, summary_column, right = st.columns(4)
         with left:
             st.metric("Indexed leases", status.get("indexed_lease_count", 0))
         with middle:
             st.metric("Chunks", status.get("chunk_count", 0))
+        with summary_column:
+            st.metric("Summaries", status.get("indexed_summary_count", 0))
         with right:
             st.metric("Collection", status.get("collection_name", "lease_chunks"))
 
@@ -213,28 +217,104 @@ def render_s3_index_tab() -> None:
         if last_indexed_at:
             st.caption(f"Last indexed: {last_indexed_at}")
 
+    job_status = call_api_get("/rag/index/status")
+    job_is_running = _render_s3_index_job_status(job_status)
+
     submitted = st.button("Index S3 Leases", type="primary", use_container_width=True)
+    if submitted:
+        with st.spinner("Starting S3 lease indexing..."):
+            job_status = call_api("/rag/index", {})
+        job_is_running = _render_s3_index_job_status(job_status)
+
+    if job_is_running:
+        _schedule_index_status_refresh()
+        return
+
     if not submitted:
         return
 
-    with st.spinner("Indexing S3 leases..."):
-        response = call_api("/rag/index", {})
 
+def _render_s3_index_job_status(job_status: object) -> bool:
+    if not isinstance(job_status, dict):
+        return False
+
+    status = job_status.get("status")
+    if status == "idle" or status is None:
+        if "indexed_lease_count" in job_status:
+            _render_s3_index_result(job_status)
+        return False
+
+    if status == "running":
+        started_at = job_status.get("started_at")
+        suffix = f" Started: {started_at}" if started_at else ""
+        st.info(f"Indexing S3 leases is running in the background.{suffix}")
+        _render_s3_index_progress(job_status)
+        return True
+
+    if status == "failed":
+        st.error(f"Indexing failed: {job_status.get('error', 'Unknown error')}")
+        return False
+
+    if status == "completed":
+        result = job_status.get("result")
+        if isinstance(result, dict):
+            _render_s3_index_result(result)
+        else:
+            st.success("Indexing completed.")
+        return False
+
+    return False
+
+
+def _render_s3_index_progress(job_status: dict[str, object]) -> None:
+    progress_value = _safe_progress_value(job_status.get("progress_percent"))
+    message = str(job_status.get("message") or "Indexing S3 leases...")
+    current = int(job_status.get("progress_current") or 0)
+    total = int(job_status.get("progress_total") or 0)
+    progress_label = message
+    if total:
+        progress_label = f"{message} ({current}/{total})"
+    st.progress(progress_value, text=progress_label)
+
+    current_key = job_status.get("current_key")
+    if current_key:
+        st.caption(f"Current file: {current_key}")
+
+
+def _safe_progress_value(value: object) -> float:
+    try:
+        progress_value = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return min(max(progress_value, 0.0), 1.0)
+
+
+def _render_s3_index_result(response: dict[str, object]) -> None:
     if response is None:
         return
 
     st.success(
         "Indexed "
         f"{response.get('indexed_lease_count', 0)} leases into "
-        f"{response.get('indexed_chunk_count', 0)} chunks."
+        f"{response.get('indexed_chunk_count', 0)} chunks and stored "
+        f"{response.get('summarised_lease_count', 0)} summaries."
     )
 
     skipped_files = response.get("skipped_files") or []
     failed_files = response.get("failed_files") or []
+    summary_failed_files = response.get("summary_failed_files") or []
     if skipped_files:
         st.warning("Skipped files: " + ", ".join(skipped_files))
     if failed_files:
         st.warning("Failed files: " + ", ".join(failed_files))
+    if summary_failed_files:
+        st.warning("Summary failed files: " + ", ".join(summary_failed_files))
+
+
+def _schedule_index_status_refresh() -> None:
+    time.sleep(2)
+    if hasattr(st, "rerun"):
+        st.rerun()
 
 
 def render_s3_search_tab() -> None:
@@ -285,45 +365,56 @@ def render_s3_chat_tab() -> None:
         key="rag_chat_lease_keys",
     )
     show_sources = st.toggle("Show sources", value=False, key="rag_chat_show_sources")
-    question = st.text_input("Question", key="rag_chat_question")
-
-    left, right = st.columns(2)
-    with left:
-        submitted = st.button("Send", type="primary", use_container_width=True)
-    with right:
-        clear_chat = st.button("Clear Chat", use_container_width=True)
+    clear_chat = st.button("Clear Chat", use_container_width=True)
 
     if clear_chat:
         history.clear()
 
-    if submitted:
-        if not question.strip():
-            st.error("Enter a question before sending.")
-        else:
-            payload = {
-                "question": question,
-                "lease_keys": [str(lease["key"]) for lease in selected_leases],
-                "history": _chat_history_for_api(history),
-                "top_k": 5,
+    chat_window = st.container(height=520, border=True)
+    with chat_window:
+        _render_chat_history(history, show_sources)
+
+    question = st.chat_input(
+        "Ask about the indexed leases...",
+        key="rag_chat_question",
+    )
+    if not question:
+        return
+
+    cleaned_question = question.strip()
+    if not cleaned_question:
+        return
+
+    api_history = _chat_history_for_api(history)
+    history.append({"role": "user", "content": cleaned_question})
+
+    payload = {
+        "question": cleaned_question,
+        "lease_keys": [str(lease["key"]) for lease in selected_leases],
+        "history": api_history,
+        "top_k": 5,
+    }
+
+    with chat_window:
+        _render_chat_message(history[-1], show_sources)
+        with st.chat_message("assistant"):
+            response_placeholder = st.empty()
+            response_placeholder.markdown("_Searching indexed lease text..._")
+            response = call_api("/rag/chat", payload)
+
+            if response is None:
+                response_placeholder.empty()
+                return
+
+            assistant_message = {
+                "role": "assistant",
+                "content": response.get("answer", ""),
+                "citations": response.get("citations") or [],
             }
-            with st.spinner("Answering from indexed lease text..."):
-                response = call_api("/rag/chat", payload)
-
-            if response is not None:
-                history.append({"role": "user", "content": question})
-                history.append(
-                    {
-                        "role": "assistant",
-                        "content": response.get("answer", ""),
-                        "citations": response.get("citations") or [],
-                    }
-                )
-
-    for item in history:
-        speaker = "You" if item.get("role") == "user" else "Assistant"
-        st.markdown(f"**{speaker}:** {item.get('content', '')}")
-        if show_sources and item.get("role") == "assistant":
-            _render_rag_citations(item.get("citations") or [])
+            history.append(assistant_message)
+            response_placeholder.markdown(str(assistant_message["content"]))
+            if show_sources:
+                _render_rag_citations(assistant_message.get("citations") or [])
 
 
 def _load_s3_leases() -> list[S3LeaseOption] | None:
@@ -345,6 +436,26 @@ def _chat_history_for_api(history: list[object]) -> list[dict[str, str]]:
     return api_history
 
 
+def _render_chat_history(history: list[object], show_sources: bool) -> None:
+    for item in history:
+        _render_chat_message(item, show_sources)
+
+
+def _render_chat_message(item: object, show_sources: bool) -> None:
+    if not isinstance(item, dict):
+        return
+
+    role = item.get("role")
+    content = item.get("content")
+    if role not in {"user", "assistant"} or not isinstance(content, str):
+        return
+
+    with st.chat_message(role):
+        st.markdown(content)
+        if show_sources and role == "assistant":
+            _render_rag_citations(item.get("citations") or [])
+
+
 def _render_rag_citations(citations: list[object]) -> None:
     if not citations:
         return
@@ -353,7 +464,8 @@ def _render_rag_citations(citations: list[object]) -> None:
     for citation in citations:
         if not isinstance(citation, dict):
             continue
-        st.caption(str(citation.get("key", "")))
+        source_type = str(citation.get("source_type") or "chunk")
+        st.caption(f"{citation.get('key', '')} ({source_type})")
         st.write(citation.get("snippet", ""))
 
 
