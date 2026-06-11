@@ -1,7 +1,10 @@
 from collections.abc import Callable
+from datetime import UTC, datetime
+import threading
+from uuid import uuid4
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile
 from pydantic import ValidationError
 
 from app.config import get_rag_settings, get_s3_settings, get_settings
@@ -14,6 +17,7 @@ from app.schemas import (
     LeaseTextRequest,
     RAGChatRequest,
     RAGChatResponse,
+    RAGIndexJobStatus,
     RAGIndexResponse,
     RAGSearchRequest,
     RAGSearchResponse,
@@ -46,6 +50,10 @@ app = FastAPI(
     description="Grounded lease extraction and comparison API backed by Azure OpenAI.",
     version="1.0.0",
 )
+
+
+_INDEX_JOB_LOCK = threading.Lock()
+_INDEX_JOB_STATE = RAGIndexJobStatus(status="idle")
 
 
 def create_lease_service() -> LeaseSummariserService:
@@ -204,19 +212,47 @@ def rag_status(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@app.post("/rag/index", response_model=RAGIndexResponse)
+@app.post("/rag/index", response_model=RAGIndexJobStatus)
 def index_s3_leases_for_rag(
+    background_tasks: BackgroundTasks,
     rag_service_factory: RAGServiceFactoryDependency,
     s3_storage_factory: S3StorageFactoryDependency,
-) -> RAGIndexResponse:
-    try:
-        return rag_service_factory().index_s3_leases(s3_storage_factory())
-    except (ValidationError, RAGConfigurationError, S3ConfigurationError) as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except S3StorageError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except RAGError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    service_factory: LeaseServiceFactoryDependency,
+) -> RAGIndexJobStatus:
+    with _INDEX_JOB_LOCK:
+        if _INDEX_JOB_STATE.status == "running":
+            return _INDEX_JOB_STATE.model_copy(deep=True)
+
+        job_id = str(uuid4())
+        _set_index_job_state_unlocked(
+            RAGIndexJobStatus(
+                job_id=job_id,
+                status="running",
+                started_at=datetime.now(UTC).isoformat(),
+                finished_at=None,
+                result=None,
+                error=None,
+                progress_current=0,
+                progress_total=0,
+                progress_percent=0.0,
+                message="Starting S3 lease indexing.",
+                current_key=None,
+            )
+        )
+
+    background_tasks.add_task(
+        _run_index_job,
+        job_id,
+        rag_service_factory,
+        s3_storage_factory,
+        service_factory,
+    )
+    return _get_index_job_state()
+
+
+@app.get("/rag/index/status", response_model=RAGIndexJobStatus)
+def rag_index_status() -> RAGIndexJobStatus:
+    return _get_index_job_state()
 
 
 @app.post("/rag/search", response_model=RAGSearchResponse)
@@ -248,6 +284,105 @@ def chat_with_rag_leases(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except (RAGError, LLMResponseError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+def _run_index_job(
+    job_id: str,
+    rag_service_factory: Callable[[], RAGService],
+    s3_storage_factory: Callable[[], S3LeaseStorage],
+    service_factory: Callable[[], LeaseSummariserService],
+) -> None:
+    try:
+        result = rag_service_factory().index_s3_leases(
+            s3_storage_factory(),
+            service_factory(),
+            progress_callback=lambda current, total, message, current_key: (
+                _update_index_job_progress(
+                    job_id,
+                    current,
+                    total,
+                    message,
+                    current_key,
+                )
+            ),
+        )
+    except Exception as exc:
+        with _INDEX_JOB_LOCK:
+            if _INDEX_JOB_STATE.job_id != job_id:
+                return
+            _set_index_job_state_unlocked(
+                _INDEX_JOB_STATE.model_copy(
+                    update={
+                        "status": "failed",
+                        "finished_at": datetime.now(UTC).isoformat(),
+                        "error": str(exc),
+                        "message": "Indexing failed.",
+                        "current_key": None,
+                    },
+                    deep=True,
+                )
+            )
+        return
+
+    with _INDEX_JOB_LOCK:
+        if _INDEX_JOB_STATE.job_id != job_id:
+            return
+        _set_index_job_state_unlocked(
+            _INDEX_JOB_STATE.model_copy(
+                update={
+                    "status": "completed",
+                    "finished_at": datetime.now(UTC).isoformat(),
+                    "result": result,
+                    "error": None,
+                    "progress_current": _INDEX_JOB_STATE.progress_total,
+                    "progress_percent": 1.0,
+                    "message": "Indexing completed.",
+                    "current_key": None,
+                },
+                deep=True,
+            )
+        )
+
+
+def _update_index_job_progress(
+    job_id: str,
+    current: int,
+    total: int,
+    message: str,
+    current_key: str | None,
+) -> None:
+    progress_total = max(total, 0)
+    progress_current = max(min(current, progress_total), 0)
+    progress_percent = (
+        progress_current / progress_total
+        if progress_total
+        else 0.0
+    )
+    with _INDEX_JOB_LOCK:
+        if _INDEX_JOB_STATE.job_id != job_id or _INDEX_JOB_STATE.status != "running":
+            return
+        _set_index_job_state_unlocked(
+            _INDEX_JOB_STATE.model_copy(
+                update={
+                    "progress_current": progress_current,
+                    "progress_total": progress_total,
+                    "progress_percent": progress_percent,
+                    "message": message,
+                    "current_key": current_key,
+                },
+                deep=True,
+            )
+        )
+
+
+def _get_index_job_state() -> RAGIndexJobStatus:
+    with _INDEX_JOB_LOCK:
+        return _INDEX_JOB_STATE.model_copy(deep=True)
+
+
+def _set_index_job_state_unlocked(state: RAGIndexJobStatus) -> None:
+    global _INDEX_JOB_STATE
+    _INDEX_JOB_STATE = state
 
 
 def _summarise_text(

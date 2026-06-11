@@ -3,6 +3,17 @@ from contextlib import nullcontext
 from frontend import tabs
 
 
+class RecordingPlaceholder:
+    def __init__(self, calls) -> None:
+        self.calls = calls
+
+    def markdown(self, text: str) -> None:
+        self.calls.append(("placeholder_markdown", text))
+
+    def empty(self) -> None:
+        self.calls.append(("placeholder_empty",))
+
+
 class RecordingStreamlit:
     def __init__(self) -> None:
         self.calls = []
@@ -10,6 +21,7 @@ class RecordingStreamlit:
         self.selectbox_values: dict[str, object] = {}
         self.multiselect_values: dict[str, list[object]] = {}
         self.text_inputs: dict[str, str] = {}
+        self.chat_inputs: dict[str, str] = {}
         self.toggles: dict[str, bool] = {}
         self.radios: dict[str, str] = {}
         self.session_state: dict[str, object] = {}
@@ -41,8 +53,27 @@ class RecordingStreamlit:
         self.calls.append(("columns", count))
         return [nullcontext() for _ in range(count)]
 
+    def container(self, **kwargs):
+        self.calls.append(("container", kwargs))
+        return nullcontext()
+
+    def chat_message(self, role: str):
+        self.calls.append(("chat_message", role))
+        return nullcontext()
+
+    def chat_input(self, placeholder: str, key=None) -> str | None:
+        self.calls.append(("chat_input", placeholder, key))
+        return self.chat_inputs.get(key)
+
+    def empty(self):
+        self.calls.append(("empty",))
+        return RecordingPlaceholder(self.calls)
+
     def metric(self, label: str, value) -> None:
         self.calls.append(("metric", label, value))
+
+    def progress(self, value, text=None) -> None:
+        self.calls.append(("progress", value, text))
 
     def caption(self, text: str) -> None:
         self.calls.append(("caption", text))
@@ -230,26 +261,37 @@ def test_s3_index_calls_rag_index(monkeypatch):
     fake_st = RecordingStreamlit()
     fake_st.buttons["Index S3 Leases"] = True
     monkeypatch.setattr(tabs, "st", fake_st)
-    monkeypatch.setattr(
-        tabs,
-        "call_api_get",
-        lambda path: {
+    def fake_call_api_get(path):
+        if path == "/rag/index/status":
+            return {"status": "idle"}
+        return {
             "collection_name": "lease_chunks",
             "indexed_lease_count": 0,
             "chunk_count": 0,
+            "indexed_summary_count": 0,
             "last_indexed_at": None,
-        },
-    )
+        }
+
+    monkeypatch.setattr(tabs, "call_api_get", fake_call_api_get)
 
     calls = []
 
     def fake_call_api(path, payload):
         calls.append((path, payload))
         return {
-            "indexed_lease_count": 2,
-            "indexed_chunk_count": 4,
-            "skipped_files": [],
-            "failed_files": [],
+            "job_id": "job-1",
+            "status": "completed",
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": "2026-01-01T00:00:05+00:00",
+            "error": None,
+            "result": {
+                "indexed_lease_count": 2,
+                "indexed_chunk_count": 4,
+                "skipped_files": [],
+                "failed_files": [],
+                "summarised_lease_count": 2,
+                "summary_failed_files": [],
+            },
         }
 
     monkeypatch.setattr(tabs, "call_api", fake_call_api)
@@ -259,7 +301,50 @@ def test_s3_index_calls_rag_index(monkeypatch):
     assert calls == [("/rag/index", {})]
     assert (
         "success",
-        "Indexed 2 leases into 4 chunks.",
+        "Indexed 2 leases into 4 chunks and stored 2 summaries.",
+    ) in fake_st.calls
+
+
+def test_s3_index_running_job_shows_progress_bar(monkeypatch):
+    fake_st = RecordingStreamlit()
+    monkeypatch.setattr(tabs, "st", fake_st)
+    monkeypatch.setattr(tabs.time, "sleep", lambda _seconds: None)
+
+    def fake_call_api_get(path):
+        if path == "/rag/index/status":
+            return {
+                "job_id": "job-1",
+                "status": "running",
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "finished_at": None,
+                "result": None,
+                "error": None,
+                "progress_current": 2,
+                "progress_total": 5,
+                "progress_percent": 0.4,
+                "message": "Processing lease_b.txt.",
+                "current_key": "sample_leases/lease_b.txt",
+            }
+        return {
+            "collection_name": "lease_chunks",
+            "indexed_lease_count": 1,
+            "chunk_count": 2,
+            "indexed_summary_count": 1,
+            "last_indexed_at": None,
+        }
+
+    monkeypatch.setattr(tabs, "call_api_get", fake_call_api_get)
+
+    tabs.render_s3_index_tab()
+
+    assert (
+        "progress",
+        0.4,
+        "Processing lease_b.txt. (2/5)",
+    ) in fake_st.calls
+    assert (
+        "caption",
+        "Current file: sample_leases/lease_b.txt",
     ) in fake_st.calls
 
 
@@ -299,9 +384,8 @@ def test_s3_search_sends_question_to_rag_search(monkeypatch):
 def test_s3_chat_sends_selected_keys_and_preserves_history(monkeypatch):
     leases = s3_leases()
     fake_st = RecordingStreamlit()
-    fake_st.buttons["Send"] = True
     fake_st.multiselect_values["rag_chat_lease_keys"] = [leases[1]]
-    fake_st.text_inputs["rag_chat_question"] = "When is rent due?"
+    fake_st.chat_inputs["rag_chat_question"] = "When is rent due?"
     fake_st.session_state["rag_chat_history"] = [
         {"role": "user", "content": "What is the rent?"},
         {"role": "assistant", "content": "Rent is 1,500 pounds."},
@@ -359,6 +443,17 @@ def test_s3_chat_sends_selected_keys_and_preserves_history(monkeypatch):
             ],
         },
     ]
+    assert ("container", {"height": 520, "border": True}) in fake_st.calls
+    assert ("chat_message", "user") in fake_st.calls
+    assert ("chat_message", "assistant") in fake_st.calls
+    assert (
+        "placeholder_markdown",
+        "_Searching indexed lease text..._",
+    ) in fake_st.calls
+    assert (
+        "placeholder_markdown",
+        "Rent is due on the first day of each month.",
+    ) in fake_st.calls
     assert ("markdown", "#### Sources") not in fake_st.calls
 
 
@@ -385,10 +480,7 @@ def test_s3_chat_toggle_shows_sources_after_assistant_response(monkeypatch):
 
     tabs.render_s3_chat_tab()
 
-    assistant_call = (
-        "markdown",
-        "**Assistant:** Pets are limited to one indoor cat.",
-    )
+    assistant_call = ("markdown", "Pets are limited to one indoor cat.")
     sources_call = ("markdown", "#### Sources")
     assert assistant_call in fake_st.calls
     assert sources_call in fake_st.calls
