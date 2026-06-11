@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import mimetypes
 import os
 import sys
@@ -10,8 +11,19 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SECRET_NAME = "dev/ds-may26/LeaseSummariser"
+
+
+def _fetch_secrets() -> dict:
+    region = os.getenv("REGION_NAME", os.getenv("AWS_REGION", "eu-west-2"))
+    client = boto3.client("secretsmanager", region_name=region)
+    try:
+        response = client.get_secret_value(SecretId=SECRET_NAME)
+        return json.loads(response["SecretString"])
+    except Exception as e:
+        print(f"Warning: could not fetch secrets from AWS Secrets Manager: {e}", file=sys.stderr)
+        return {}
 
 CONTENT_TYPES_BY_SUFFIX = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -31,29 +43,29 @@ def env_value(*names: str) -> str | None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Upload all sample lease files to an S3 prefix using AWS credentials "
-            "loaded from .env."
+            "Upload all sample lease files to an S3 prefix. AWS credentials are "
+            "loaded from .env; all other config is fetched from AWS Secrets Manager."
         )
     )
     parser.add_argument(
         "--env-file",
         default=".env",
-        help="Path to the .env file. Defaults to .env at the project root.",
+        help="Path to the .env file (used for AWS credentials only). Defaults to .env at the project root.",
     )
     parser.add_argument(
         "--source-dir",
         default=None,
-        help="Folder containing lease files. Defaults to S3_SOURCE_DIR, PDF_SOURCE_DIR, or sample_leases.",
+        help="Folder containing lease files. Defaults to PDF_SOURCE_DIR from Secrets Manager or sample_leases.",
     )
     parser.add_argument(
         "--bucket",
         default=None,
-        help="S3 bucket name. Defaults to S3_BUCKET_NAME, S3_BUCKET, or AWS_S3_BUCKET from .env.",
+        help="S3 bucket name. Defaults to S3_BUCKET_NAME from AWS Secrets Manager.",
     )
     parser.add_argument(
         "--prefix",
         default=None,
-        help="S3 folder/prefix. Defaults to S3_PREFIX from .env or sample_leases.",
+        help="S3 folder/prefix. Defaults to S3_PREFIX from AWS Secrets Manager or sample_leases.",
     )
     parser.add_argument(
         "--dry-run",
@@ -133,18 +145,28 @@ def main() -> int:
         print(f"Could not find env file: {env_path}", file=sys.stderr)
         return 1
 
+    # Load .env for AWS credentials only (needed to connect to Secrets Manager)
     load_dotenv(env_path, override=True)
+
+    # Fetch all remaining config from AWS Secrets Manager
+    secrets = _fetch_secrets()
 
     source_dir = resolve_project_path(
         args.source_dir
-        or env_value("S3_SOURCE_DIR", "PDF_SOURCE_DIR")
+        or secrets.get("PDF_SOURCE_DIR")
+        or secrets.get("S3_SOURCE_DIR")
         or "sample_leases"
     )
-    bucket = args.bucket or env_value("S3_BUCKET_NAME", "S3_BUCKET", "AWS_S3_BUCKET")
+    bucket = (
+        args.bucket
+        or secrets.get("S3_BUCKET_NAME")
+        or secrets.get("S3_BUCKET")
+        or secrets.get("AWS_S3_BUCKET")
+    )
     prefix = normalize_s3_prefix(
         args.prefix
         if args.prefix is not None
-        else os.getenv("S3_PREFIX", "sample_leases")
+        else secrets.get("S3_PREFIX", "sample_leases")
     )
 
     if not bucket:
