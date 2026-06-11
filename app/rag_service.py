@@ -74,7 +74,7 @@ class AzureEmbeddingClient:
         )
         self._deployment = settings.azure_openai_embedding_deployment
 
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+    def embed_texts(self, texts: list[str], trace: Any | None = None) -> list[list[float]]:
         if not self._deployment:
             raise RAGConfigurationError(
                 "Azure OpenAI embedding deployment is not configured. "
@@ -83,12 +83,35 @@ class AzureEmbeddingClient:
         if not texts:
             return []
 
-        response = self._client.embeddings.create(
-            model=self._deployment,
-            input=texts,
-        )
+        generation = None
+        if trace is not None:
+            generation = trace.generation(
+                name="embed-texts",
+                model=self._deployment,
+                input=texts,
+            )
+
+        try:
+            response = self._client.embeddings.create(
+                model=self._deployment,
+                input=texts,
+            )
+        except Exception:
+            if generation is not None:
+                generation.end(level="ERROR")
+            raise
+
         data = sorted(response.data, key=lambda item: item.index)
+
+        if generation is not None:
+            usage = response.usage
+            generation.end(
+                output=f"{len(data)} embeddings",
+                usage={"input": usage.total_tokens if usage else 0},
+            )
+
         return [item.embedding for item in data]
+
 
 
 class AzureRAGChatClient:
@@ -101,11 +124,12 @@ class AzureRAGChatClient:
         self._deployment = settings.azure_openai_deployment
 
     def answer(
-        self,
-        question: str,
-        history: list[RAGChatMessage],
-        chunks: list[LeaseChunk],
-    ) -> RAGChatAnswer:
+    self,
+    question: str,
+    history: list[RAGChatMessage],
+    chunks: list[LeaseChunk],
+    trace: Any | None = None,
+) -> RAGChatAnswer:
         if not chunks:
             return RAGChatAnswer(
                 answer=(
@@ -115,14 +139,40 @@ class AzureRAGChatClient:
                 citations=[],
             )
 
-        response = self._client.chat.completions.create(
-            model=self._deployment,
-            messages=_build_chat_messages(question, history, chunks),
-            temperature=0.0,
-            response_format=_build_json_schema_response_format(RAGChatAnswer),
-        )
+        messages = _build_chat_messages(question, history, chunks)
+
+        generation = None
+        if trace is not None:
+            generation = trace.generation(
+                name="rag-answer",
+                model=self._deployment,
+                input=messages,
+            )
+
+        try:
+            response = self._client.chat.completions.create(
+                model=self._deployment,
+                messages=messages,
+                temperature=0.0,
+                response_format=_build_json_schema_response_format(RAGChatAnswer),
+            )
+        except Exception:
+            if generation is not None:
+                generation.end(level="ERROR")
+            raise
 
         content = response.choices[0].message.content
+
+        if generation is not None:
+            usage = response.usage
+            generation.end(
+                output=content or "",
+                usage={
+                    "input": usage.prompt_tokens if usage else 0,
+                    "output": usage.completion_tokens if usage else 0,
+                },
+            )
+
         if not content:
             raise LLMResponseError("Azure OpenAI returned an empty RAG answer.")
 
@@ -256,62 +306,76 @@ class RAGService:
         embedding_client: AzureEmbeddingClient,
         chat_client: AzureRAGChatClient,
         s3_prefix: str,
+        langfuse: Any | None = None,
     ):
         self._vector_store = vector_store
         self._embedding_client = embedding_client
         self._chat_client = chat_client
         self._s3_prefix = _normalize_prefix(s3_prefix)
+        self._langfuse = langfuse
 
     def status(self) -> RAGStatusResponse:
         return self._vector_store.status()
 
     def index_s3_leases(self, s3_storage) -> RAGIndexResponse:
-        indexed_at = datetime.now(UTC).isoformat()
-        s3_files = s3_storage.list_lease_files()
-        chunks: list[LeaseChunk] = []
-        skipped_files: list[str] = []
-        failed_files: list[str] = []
+        trace = self._langfuse.trace(name="rag-index") if self._langfuse else None
+        try:
+            indexed_at = datetime.now(UTC).isoformat()
+            s3_files = s3_storage.list_lease_files()
+            chunks: list[LeaseChunk] = []
+            skipped_files: list[str] = []
+            failed_files: list[str] = []
 
-        self._vector_store.reset_prefix(self._s3_prefix)
+            self._vector_store.reset_prefix(self._s3_prefix)
 
-        for s3_file in s3_files:
-            try:
-                filename, content = s3_storage.get_file(s3_file.key)
-                text = extract_text_from_file(filename, content)
-            except DocumentParseError:
-                failed_files.append(s3_file.key)
-                continue
-            except Exception:
-                failed_files.append(s3_file.key)
-                continue
+            for s3_file in s3_files:
+                try:
+                    filename, content = s3_storage.get_file(s3_file.key)
+                    text = extract_text_from_file(filename, content)
+                except DocumentParseError:
+                    failed_files.append(s3_file.key)
+                    continue
+                except Exception:
+                    failed_files.append(s3_file.key)
+                    continue
 
-            lease_chunks = _chunks_for_file(s3_file, text, self._s3_prefix, indexed_at)
-            if not lease_chunks:
-                skipped_files.append(s3_file.key)
-                continue
-            chunks.extend(lease_chunks)
+                lease_chunks = _chunks_for_file(s3_file, text, self._s3_prefix, indexed_at)
+                if not lease_chunks:
+                    skipped_files.append(s3_file.key)
+                    continue
+                chunks.extend(lease_chunks)
 
-        embeddings: list[list[float]] = []
-        for batch in _batches([chunk.text for chunk in chunks], EMBEDDING_BATCH_SIZE):
-            embeddings.extend(self._embedding_client.embed_texts(batch))
+            embeddings: list[list[float]] = []
+            for batch in _batches([chunk.text for chunk in chunks], EMBEDDING_BATCH_SIZE):
+                embeddings.extend(self._embedding_client.embed_texts(batch, trace=trace))
 
-        self._vector_store.upsert_chunks(chunks, embeddings)
+            self._vector_store.upsert_chunks(chunks, embeddings)
 
-        indexed_keys = {chunk.key for chunk in chunks}
-        return RAGIndexResponse(
-            indexed_lease_count=len(indexed_keys),
-            indexed_chunk_count=len(chunks),
-            skipped_files=skipped_files,
-            failed_files=failed_files,
-        )
+            indexed_keys = {chunk.key for chunk in chunks}
+            return RAGIndexResponse(
+                indexed_lease_count=len(indexed_keys),
+                indexed_chunk_count=len(chunks),
+                skipped_files=skipped_files,
+                failed_files=failed_files,
+            )
+        finally:
+            if self._langfuse:
+                self._langfuse.flush()
+
 
     def search(self, question: str, top_k: int) -> RAGSearchResponse:
-        query_embedding = self._embedding_client.embed_texts([question])[0]
-        chunks = self._vector_store.query(query_embedding, top_k)
-        return RAGSearchResponse(
-            question=question,
-            matches=[_search_match(chunk) for chunk in chunks],
-        )
+        trace = self._langfuse.trace(name="rag-search") if self._langfuse else None
+        try:
+            query_embedding = self._embedding_client.embed_texts([question], trace=trace)[0]
+            chunks = self._vector_store.query(query_embedding, top_k)
+            return RAGSearchResponse(
+                question=question,
+                matches=[_search_match(chunk) for chunk in chunks],
+            )
+        finally:
+            if self._langfuse:
+                self._langfuse.flush()
+
 
     def lease_text_from_index(self, key: str) -> str:
         validated_key = _validate_indexed_key(key, self._s3_prefix)
@@ -329,31 +393,40 @@ class RAGService:
         history: list[RAGChatMessage],
         top_k: int,
     ) -> RAGChatResponse:
-        query_embedding = self._embedding_client.embed_texts([question])[0]
-        chunks = self._vector_store.query(
-            query_embedding,
-            top_k,
-            lease_keys=lease_keys,
-        )
-        answer = self._chat_client.answer(question, history, chunks)
-        return RAGChatResponse(
-            question=question,
-            answer=answer.answer,
-            citations=[_citation(chunk) for chunk in chunks],
-        )
+        trace = self._langfuse.trace(name="rag-chat") if self._langfuse else None
+        try:
+            query_embedding = self._embedding_client.embed_texts([question], trace=trace)[0]
+            chunks = self._vector_store.query(
+                query_embedding,
+                top_k,
+                lease_keys=lease_keys,
+            )
+            answer = self._chat_client.answer(question, history, chunks, trace=trace)
+            return RAGChatResponse(
+                question=question,
+                answer=answer.answer,
+                citations=[_citation(chunk) for chunk in chunks],
+            )
+        finally:
+            if self._langfuse:
+                self._langfuse.flush()
+
 
 
 def create_rag_service(
     settings: Settings,
     rag_settings: RAGSettings,
     s3_settings: S3Settings,
+    langfuse: Any | None = None,
 ) -> RAGService:
     return RAGService(
         vector_store=ChromaLeaseVectorStore(rag_settings),
         embedding_client=AzureEmbeddingClient(settings),
         chat_client=AzureRAGChatClient(settings),
         s3_prefix=s3_settings.s3_prefix,
+        langfuse=langfuse,
     )
+
 
 
 def _chunks_for_file(

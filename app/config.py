@@ -80,3 +80,21 @@ def get_s3_settings() -> S3Settings:
 @lru_cache
 def get_rag_settings() -> RAGSettings:
     return RAGSettings()
+
+
+class LangfuseSettings(BaseSettings):
+    langfuse_secret_key: str | None = Field(default=None, alias="LANGFUSE_SECRET_KEY")
+    langfuse_public_key: str | None = Field(default=None, alias="LANGFUSE_PUBLIC_KEY")
+    langfuse_base_url: str | None = Field(default=None, alias="LANGFUSE_BASE_URL")
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+
+@lru_cache
+def get_langfuse_settings() -> LangfuseSettings:
+    return LangfuseSettings()
+
