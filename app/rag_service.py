@@ -142,13 +142,13 @@ class AzureRAGChatClient:
         self._deployment = settings.azure_openai_deployment
 
     def answer(
-    self,
-    question: str,
-    history: list[RAGChatMessage],
-    chunks: list[LeaseChunk],
-    trace: Any | None = None,
-    summaries: list[LeaseSummaryRecord],
-) -> RAGChatAnswer:
+        self,
+        question: str,
+        history: list[RAGChatMessage],
+        chunks: list[LeaseChunk],
+        summaries: list[LeaseSummaryRecord],
+        trace: Any | None = None,
+    ) -> RAGChatAnswer:
         if not chunks and not summaries:
             return RAGChatAnswer(
                 answer=(
@@ -158,12 +158,25 @@ class AzureRAGChatClient:
                 citations=[],
             )
 
-        response = self._client.chat.completions.create(
-            model=self._deployment,
-            messages=_build_chat_messages(question, history, chunks),
-            temperature=0.0,
-            response_format=_build_json_schema_response_format(RAGChatAnswer),
-        )
+        generation = None
+        if trace is not None:
+            generation = trace.generation(
+                name="rag-chat-answer",
+                model=self._deployment,
+                input={"question": question, "chunks": len(chunks), "summaries": len(summaries)},
+            )
+
+        try:
+            response = self._client.chat.completions.create(
+                model=self._deployment,
+                messages=_build_chat_messages(question, history, chunks, summaries),
+                temperature=0.0,
+                response_format=_build_json_schema_response_format(RAGChatAnswer),
+            )
+        except Exception:
+            if generation is not None:
+                generation.end(level="ERROR")
+            raise
 
         content = response.choices[0].message.content
 
@@ -411,11 +424,15 @@ class RAGService:
         embedding_client: AzureEmbeddingClient,
         chat_client: AzureRAGChatClient,
         s3_prefix: str,
+        summary_store: LeaseSummaryStore | InMemoryLeaseSummaryStore | None = None,
+        langfuse: Any | None = None,
     ):
         self._vector_store = vector_store
         self._embedding_client = embedding_client
         self._chat_client = chat_client
         self._s3_prefix = _normalize_prefix(s3_prefix)
+        self._summary_store = summary_store if summary_store is not None else InMemoryLeaseSummaryStore()
+        self._langfuse = langfuse
 
     def status(self) -> RAGStatusResponse:
         status = self._vector_store.status()
@@ -448,11 +465,16 @@ class RAGService:
                 continue
             chunks.extend(lease_chunks)
 
-        embeddings: list[list[float]] = []
-        for batch in _batches([chunk.text for chunk in chunks], EMBEDDING_BATCH_SIZE):
-            embeddings.extend(self._embedding_client.embed_texts(batch))
+        trace = self._langfuse.trace(name="rag-index") if self._langfuse else None
+        try:
+            embeddings: list[list[float]] = []
+            for batch in _batches([chunk.text for chunk in chunks], EMBEDDING_BATCH_SIZE):
+                embeddings.extend(self._embedding_client.embed_texts(batch, trace=trace))
 
-        self._vector_store.upsert_chunks(chunks, embeddings)
+            self._vector_store.upsert_chunks(chunks, embeddings)
+        finally:
+            if self._langfuse:
+                self._langfuse.flush()
 
         indexed_keys = {chunk.key for chunk in chunks}
         return RAGIndexResponse(
@@ -492,18 +514,27 @@ class RAGService:
         history: list[RAGChatMessage],
         top_k: int,
     ) -> RAGChatResponse:
-        query_embedding = self._embedding_client.embed_texts([question])[0]
-        chunks = self._vector_store.query(
-            query_embedding,
-            top_k,
-            lease_keys=lease_keys,
-        )
-        answer = self._chat_client.answer(question, history, chunks)
-        return RAGChatResponse(
-            question=question,
-            answer=answer.answer,
-            citations=[_citation(chunk) for chunk in chunks],
-        )
+        trace = self._langfuse.trace(name="rag-chat") if self._langfuse else None
+        try:
+            summaries = self._summary_store.list_summaries(self._s3_prefix, lease_keys or None)
+            aggregate = _answer_summary_aggregate_question(question, summaries)
+            if aggregate is not None:
+                return aggregate
+            query_embedding = self._embedding_client.embed_texts([question], trace=trace)[0]
+            chunks = self._vector_store.query(
+                query_embedding,
+                top_k,
+                lease_keys=lease_keys,
+            )
+            answer = self._chat_client.answer(question, history, chunks, summaries, trace=trace)
+            return RAGChatResponse(
+                question=question,
+                answer=answer.answer,
+                citations=[_citation(chunk) for chunk in chunks],
+            )
+        finally:
+            if self._langfuse:
+                self._langfuse.flush()
 
 
 def create_rag_service(
@@ -517,6 +548,8 @@ def create_rag_service(
         embedding_client=AzureEmbeddingClient(settings),
         chat_client=AzureRAGChatClient(settings),
         s3_prefix=s3_settings.s3_prefix,
+        summary_store=LeaseSummaryStore(rag_settings.chroma_persist_dir),
+        langfuse=langfuse,
     )
 
 
