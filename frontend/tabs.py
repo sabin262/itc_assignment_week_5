@@ -380,7 +380,11 @@ def render_s3_search_tab() -> None:
         st.markdown(
             f"#### {match.get('filename', match.get('key', 'Lease'))}{score_text}"
         )
-        st.caption(str(match.get("key", "")))
+        caption = str(match.get("key", ""))
+        section_heading = match.get("section_heading")
+        if section_heading:
+            caption = f"{caption} - {section_heading}"
+        st.caption(caption)
         st.write(match.get("snippet", ""))
 
 
@@ -635,7 +639,8 @@ def _render_rag_citations(citations: list[object]) -> None:
         if not isinstance(citation, dict):
             continue
         source_type = str(citation.get("source_type") or "chunk")
-        st.caption(f"{citation.get('key', '')} ({source_type})")
+        caption = f"{citation.get('key', '')} ({source_type})"
+        st.caption(caption)
         st.write(citation.get("snippet", ""))
 
 
