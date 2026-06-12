@@ -3,13 +3,27 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from frontend.pdf_export import build_compare_pdf, build_summary_pdf
+
 
 def render_summary_response(response: dict[str, Any], heading: str = "Result") -> None:
     extraction = response.get("extraction", {})
     verification = response.get("verification", {})
     warnings = response.get("warnings", [])
 
-    st.subheader(heading)
+    heading_col, dl_col = st.columns([5, 1])
+    with heading_col:
+        st.subheader(heading)
+    with dl_col:
+        pdf_bytes = build_summary_pdf(response, title=heading)
+        st.download_button(
+            label="Download PDF",
+            data=pdf_bytes,
+            file_name="lease_summary.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+
     render_guardrail_checks(verification, warnings)
     render_extraction_overview(extraction)
 
@@ -96,7 +110,19 @@ def render_compare_response(response: dict[str, Any]) -> None:
 
     render_compare_guardrail_summary(response)
 
-    st.subheader("Comparison")
+    heading_col, dl_col = st.columns([5, 1])
+    with heading_col:
+        st.subheader("Comparison")
+    with dl_col:
+        pdf_bytes = build_compare_pdf(response)
+        st.download_button(
+            label="Download PDF",
+            data=pdf_bytes,
+            file_name="lease_comparison.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+
     summary = comparison.get("summary")
     if summary:
         st.write(summary)
