@@ -20,6 +20,7 @@ from app.document_parser import (
 )
 from app.llm_client import LLMResponseError, _build_json_schema_response_format
 from app.schemas import (
+    FileCollectionInfo,
     GuardrailResult,
     RAGChatAnswer,
     RAGChatMessage,
@@ -281,19 +282,64 @@ class ChromaLeaseVectorStore:
                 "ChromaDB is not installed. Install the chromadb package."
             ) from exc
 
-        self.collection_name = settings.chroma_collection_name
+        self._persist_dir = settings.chroma_persist_dir
         self._client = chromadb.PersistentClient(path=settings.chroma_persist_dir)
-        self._collection = self._client.get_or_create_collection(
-            name=settings.chroma_collection_name,
-            metadata={"hnsw:space": "cosine"},
-        )
+        # Per-file collection cache: s3_key -> collection object
+        self._collections: dict[str, Any] = {}
+        print(f"[RAG] ChromaLeaseVectorStore ready at {settings.chroma_persist_dir!r}")
+
+    def _get_or_create_collection(self, key: str) -> Any:
+        if key not in self._collections:
+            name = _collection_name_for_key(key)
+            print(f"[RAG] get_or_create_collection: key={key!r} -> collection={name!r}")
+            self._collections[key] = self._client.get_or_create_collection(
+                name=name,
+                metadata={"hnsw:space": "cosine", "s3_key": key},
+            )
+        return self._collections[key]
+
+    def _list_all_collection_names(self) -> list[str]:
+        # ChromaDB v0.6+ list_collections() returns name-only objects; str() extracts the name.
+        try:
+            return [str(col) for col in self._client.list_collections()]
+        except Exception as exc:
+            print(f"[RAG] list_collections error: {exc}")
+            return []
+
+    def _collection_s3_key(self, col_obj: Any) -> str:
+        """Extract s3_key from collection-level metadata, fall back to first doc metadata."""
+        meta = getattr(col_obj, "metadata", {}) or {}
+        s3_key = str(meta.get("s3_key", ""))
+        if not s3_key:
+            # Legacy single-collection: read first document's metadata
+            try:
+                peek = col_obj.peek(limit=1)
+                for m in (peek.get("metadatas") or []):
+                    if isinstance(m, dict) and m.get("s3_key"):
+                        s3_key = str(m["s3_key"])
+                        break
+            except Exception:
+                pass
+        return s3_key
 
     def reset_prefix(self, prefix: str) -> None:
-        try:
-            self._collection.delete(where={"s3_prefix": prefix})
-        except Exception:
-            # Chroma raises when there is nothing matching the filter in some versions.
-            return
+        all_names = self._list_all_collection_names()
+        print(f"[RAG] reset_prefix: scanning {len(all_names)} collections for prefix={prefix!r}")
+        for name in all_names:
+            try:
+                col_obj = self._client.get_collection(name)
+                s3_key = self._collection_s3_key(col_obj)
+                if prefix and (
+                    s3_key.startswith(f"{prefix}/")
+                    # Also catch legacy single collections that store s3_prefix in docs
+                    or _col_has_prefix(col_obj, prefix)
+                ):
+                    print(f"[RAG] reset_prefix: deleting collection {name!r} (key={s3_key!r})")
+                    self._client.delete_collection(name)
+                    self._collections.pop(s3_key, None)
+            except Exception as exc:
+                print(f"[RAG] reset_prefix: error on {name!r}: {exc}")
+                continue
 
     def upsert_chunks(
         self,
@@ -305,19 +351,28 @@ class ChromaLeaseVectorStore:
         if len(chunks) != len(embeddings):
             raise RAGError("Chunk and embedding counts did not match.")
 
-        self._collection.upsert(
-            ids=[_chunk_id(chunk) for chunk in chunks],
-            documents=[chunk.text for chunk in chunks],
-            embeddings=embeddings,
-            metadatas=[_chunk_metadata(chunk) for chunk in chunks],
-        )
+        # Group chunks and their embeddings by s3 key so each file gets its own collection.
+        key_groups: dict[str, tuple[list[LeaseChunk], list[list[float]]]] = {}
+        for chunk, embedding in zip(chunks, embeddings):
+            if chunk.key not in key_groups:
+                key_groups[chunk.key] = ([], [])
+            key_groups[chunk.key][0].append(chunk)
+            key_groups[chunk.key][1].append(embedding)
+
+        for key, (file_chunks, file_embeddings) in key_groups.items():
+            print(f"[RAG] upsert_chunks: {len(file_chunks)} chunks for key={key!r}")
+            collection = self._get_or_create_collection(key)
+            collection.upsert(
+                ids=[_chunk_id(c) for c in file_chunks],
+                documents=[c.text for c in file_chunks],
+                embeddings=file_embeddings,
+                metadatas=[_chunk_metadata(c) for c in file_chunks],
+            )
 
     def chunks_for_key(self, key: str) -> list[LeaseChunk]:
         try:
-            results = self._collection.get(
-                where={"s3_key": key},
-                include=["documents", "metadatas"],
-            )
+            collection = self._get_or_create_collection(key)
+            results = collection.get(include=["documents", "metadatas"])
         except Exception as exc:
             raise RAGError("Could not load indexed lease chunks.") from exc
 
@@ -331,44 +386,51 @@ class ChromaLeaseVectorStore:
 
         return sorted(chunks, key=lambda chunk: chunk.chunk_index)
 
-    def chunks_for_prefix(self, prefix: str) -> list[LeaseChunk]:
-        try:
-            results = self._collection.get(
-                where={"s3_prefix": prefix},
-                include=["documents", "metadatas"],
-            )
-        except Exception as exc:
-            raise RAGError("Could not load indexed lease chunks.") from exc
-
-        documents = results.get("documents") or []
-        metadatas = results.get("metadatas") or []
-        chunks: list[LeaseChunk] = []
-        for document, metadata in zip(documents, metadatas):
-            if not isinstance(metadata, dict):
-                continue
-            chunks.append(_chunk_from_result(document, metadata, None))
-
-        return sorted(chunks, key=lambda chunk: (chunk.key, chunk.chunk_index))
-
     def status(self) -> RAGStatusResponse:
-        data = self._collection.get(include=["metadatas"])
-        metadatas = data.get("metadatas") or []
-        keys = {
-            metadata.get("s3_key")
-            for metadata in metadatas
-            if isinstance(metadata, dict) and metadata.get("s3_key")
-        }
-        indexed_values = [
-            metadata.get("indexed_at", "")
-            for metadata in metadatas
-            if isinstance(metadata, dict) and metadata.get("indexed_at")
-        ]
+        all_names = self._list_all_collection_names()
+        print(f"[RAG] status: checking {len(all_names)} collections")
+        total_chunks = 0
+        indexed_at_values: list[str] = []
+        lease_keys: set[str] = set()
+        file_collections: list[FileCollectionInfo] = []
 
+        for name in all_names:
+            try:
+                col_obj = self._client.get_collection(name)
+                s3_key = self._collection_s3_key(col_obj)
+                if s3_key:
+                    lease_keys.add(s3_key)
+                count = col_obj.count()
+                total_chunks += count
+                indexed_at: str | None = None
+                print(f"[RAG] status:  {name!r} key={s3_key!r} chunks={count}")
+                if count > 0:
+                    peek = col_obj.peek(limit=1)
+                    for m in (peek.get("metadatas") or []):
+                        if isinstance(m, dict):
+                            if m.get("indexed_at"):
+                                indexed_at = str(m["indexed_at"])
+                                indexed_at_values.append(indexed_at)
+                filename = PurePosixPath(s3_key).name if s3_key else name
+                file_collections.append(FileCollectionInfo(
+                    s3_key=s3_key,
+                    filename=filename,
+                    collection_name=name,
+                    chunk_count=count,
+                    indexed_at=indexed_at,
+                ))
+            except Exception as exc:
+                print(f"[RAG] status: error on {name!r}: {exc}")
+                continue
+
+        num_collections = len(all_names)
+        print(f"[RAG] status result: {len(lease_keys)} leases, {total_chunks} chunks, {num_collections} collections")
         return RAGStatusResponse(
-            collection_name=self.collection_name,
-            indexed_lease_count=len(keys),
-            chunk_count=self._collection.count(),
-            last_indexed_at=max(indexed_values) if indexed_values else None,
+            collection_name=f"per-file ({num_collections} collections)",
+            indexed_lease_count=len(lease_keys),
+            chunk_count=total_chunks,
+            last_indexed_at=max(indexed_at_values) if indexed_at_values else None,
+            file_collections=file_collections,
         )
 
     def query(
@@ -377,32 +439,44 @@ class ChromaLeaseVectorStore:
         top_k: int,
         lease_keys: list[str] | None = None,
     ) -> list[LeaseChunk]:
-        where = _lease_key_filter(lease_keys or [])
-        kwargs: dict[str, Any] = {
-            "query_embeddings": [embedding],
-            "n_results": top_k,
-            "include": ["documents", "metadatas", "distances"],
-        }
-        if where:
-            kwargs["where"] = where
+        if lease_keys:
+            target_pairs = [(key, self._get_or_create_collection(key)) for key in lease_keys]
+        else:
+            target_pairs = []
+            for name in self._list_all_collection_names():
+                try:
+                    col_obj = self._client.get_collection(name)
+                    s3_key = self._collection_s3_key(col_obj)
+                    target_pairs.append((s3_key, col_obj))
+                except Exception as exc:
+                    print(f"[RAG] query: error loading {name!r}: {exc}")
+                    continue
 
-        try:
-            results = self._collection.query(**kwargs)
-        except Exception as exc:
-            if self._collection.count() == 0:
-                return []
-            raise RAGError("Could not query the ChromaDB lease index.") from exc
-
-        documents = (results.get("documents") or [[]])[0]
-        metadatas = (results.get("metadatas") or [[]])[0]
-        distances = (results.get("distances") or [[]])[0]
-
-        chunks: list[LeaseChunk] = []
-        for document, metadata, distance in zip(documents, metadatas, distances):
-            if not isinstance(metadata, dict):
+        all_chunks: list[LeaseChunk] = []
+        for _, collection in target_pairs:
+            try:
+                count = collection.count()
+                if count == 0:
+                    continue
+                results = collection.query(
+                    query_embeddings=[embedding],
+                    n_results=min(top_k, count),
+                    include=["documents", "metadatas", "distances"],
+                )
+                documents = (results.get("documents") or [[]])[0]
+                metadatas = (results.get("metadatas") or [[]])[0]
+                distances = (results.get("distances") or [[]])[0]
+                for document, metadata, distance in zip(documents, metadatas, distances):
+                    if not isinstance(metadata, dict):
+                        continue
+                    all_chunks.append(_chunk_from_result(document, metadata, distance))
+            except Exception as exc:
+                print(f"[RAG] query: error querying collection: {exc}")
                 continue
-            chunks.append(_chunk_from_result(document, metadata, distance))
-        return chunks
+
+        # Merge across collections: best score first, then return top_k
+        all_chunks.sort(key=lambda c: c.score or 0.0, reverse=True)
+        return all_chunks[:top_k]
 
 
 class LeaseSummaryStore:
@@ -669,6 +743,60 @@ class RAGService:
             summarised_lease_count=len(summaries),
             summary_failed_files=summary_failed_files,
         )
+
+    def index_file(
+        self,
+        s3_key: str,
+        filename: str,
+        content: bytes,
+        size: int,
+        lease_service: Any | None = None,
+    ) -> dict[str, Any]:
+        """Chunk, embed, index a single file and optionally generate a summary."""
+        indexed_at = datetime.now(UTC).isoformat()
+        print(f"[RAG] index_file: key={s3_key!r} filename={filename!r} size={size}")
+
+        text = extract_text_from_file(filename, content)
+        word_count = len(text.split())
+        print(f"[RAG] index_file: extracted {word_count} words")
+
+        s3_file = S3LeaseFile(key=s3_key, filename=filename, size=size)
+        chunks = _chunks_for_file(s3_file, text, self._s3_prefix, indexed_at)
+        print(f"[RAG] index_file: generated {len(chunks)} chunks for {s3_key!r}")
+
+        trace = self._langfuse.trace(name="rag-index-file") if self._langfuse else None
+        summarised = False
+        try:
+            embeddings: list[list[float]] = []
+            for batch in _batches([c.text for c in chunks], EMBEDDING_BATCH_SIZE):
+                embeddings.extend(self._embedding_client.embed_texts(batch, trace=trace))
+            self._vector_store.upsert_chunks(chunks, embeddings)
+
+            if lease_service is not None:
+                try:
+                    validated_text = validate_lease_text(text)
+                    summary = lease_service.summarise(validated_text)
+                    self._summary_store.upsert_summaries(
+                        [_summary_record_for_file(s3_file, summary, self._s3_prefix, indexed_at)]
+                    )
+                    summarised = True
+                    print(f"[RAG] index_file: summary stored for {s3_key!r}")
+                except (ValueError, Exception) as exc:
+                    print(f"[RAG] index_file: summary failed for {s3_key!r}: {exc}")
+        finally:
+            if self._langfuse:
+                self._langfuse.flush()
+
+        collection_name = _collection_name_for_key(s3_key)
+        print(f"[RAG] index_file: done — collection={collection_name!r} chunks={len(chunks)} summarised={summarised}")
+        return {
+            "s3_key": s3_key,
+            "filename": filename,
+            "collection_name": collection_name,
+            "chunk_count": len(chunks),
+            "word_count": word_count,
+            "summarised": summarised,
+        }
 
     def search(self, question: str, top_k: int) -> RAGSearchResponse:
         trace = self._langfuse.trace(name="rag-search") if self._langfuse else None
@@ -1271,6 +1399,29 @@ def _chunk_from_result(
         indexed_at=str(metadata.get("indexed_at", "")),
         score=score,
     )
+
+
+def _col_has_prefix(col_obj: Any, prefix: str) -> bool:
+    """Check if a legacy collection (no s3_key in collection metadata) belongs to prefix."""
+    try:
+        peek = col_obj.peek(limit=1)
+        for m in (peek.get("metadatas") or []):
+            if isinstance(m, dict) and str(m.get("s3_prefix", "")) == prefix:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _collection_name_for_key(s3_key: str) -> str:
+    # Derive a stable, valid Chroma collection name from the S3 key.
+    # Chroma rules: 3-63 chars, alphanumeric/underscore/hyphen, start/end alphanumeric.
+    digest = hashlib.sha256(s3_key.encode("utf-8")).hexdigest()[:12]
+    stem = PurePosixPath(s3_key).stem
+    readable = re.sub(r"[^a-zA-Z0-9]", "_", stem)[:20].strip("_")
+    name = f"lease_{digest}_{readable}" if readable else f"lease_{digest}"
+    name = name[:63].rstrip("_")
+    return name
 
 
 def _chunk_id(chunk: LeaseChunk) -> str:

@@ -12,6 +12,7 @@ from app.config import get_rag_settings, get_s3_settings, get_settings
 from app.document_parser import DocumentParseError, extract_text_from_file
 from app.llm_client import AzureLeaseLLMClient, LLMResponseError
 from app.schemas import (
+    MIN_LEASE_WORDS,
     CompareS3Request,
     CompareRequest,
     CompareResponse,
@@ -26,6 +27,8 @@ from app.schemas import (
     S3LeaseFile,
     S3LeaseRequest,
     SummariseResponse,
+    UploadAndIndexResponse,
+    count_words,
     validate_lease_text,
 )
 from app.rag_service import (
@@ -289,6 +292,57 @@ def chat_with_rag_leases(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except (RAGError, LLMResponseError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/upload-and-index", response_model=UploadAndIndexResponse)
+async def upload_and_index_file(
+    rag_service_factory: RAGServiceFactoryDependency,
+    s3_storage_factory: S3StorageFactoryDependency,
+    lease_service_factory: LeaseServiceFactoryDependency,
+    file: UploadFile = File(...),
+) -> UploadAndIndexResponse:
+    content = await file.read()
+    filename = file.filename or "upload"
+    print(f"[API] upload-and-index: filename={filename!r} size={len(content)}")
+
+    # Validate word count before touching S3 or the vector store
+    try:
+        from app.document_parser import extract_text_from_file as _extract
+        text = _extract(filename, content)
+    except DocumentParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    word_count = count_words(text)
+    print(f"[API] upload-and-index: word_count={word_count}")
+    if word_count < MIN_LEASE_WORDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"File contains only {word_count} words. Minimum required is {MIN_LEASE_WORDS}.",
+        )
+
+    # Upload to S3
+    try:
+        s3_key = s3_storage_factory().upload_file(filename, content)
+    except S3ConfigurationError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except S3StorageError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    # Index into its own per-file ChromaDB collection and generate summary
+    try:
+        result = rag_service_factory().index_file(
+            s3_key=s3_key,
+            filename=filename,
+            content=content,
+            size=len(content),
+            lease_service=lease_service_factory(),
+        )
+    except (ValidationError, RAGConfigurationError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except RAGError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return UploadAndIndexResponse(**result)
 
 
 def _run_index_job(
