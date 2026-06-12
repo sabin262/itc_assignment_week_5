@@ -298,6 +298,7 @@ def chat_with_rag_leases(
 async def upload_and_index_file(
     rag_service_factory: RAGServiceFactoryDependency,
     s3_storage_factory: S3StorageFactoryDependency,
+    lease_service_factory: LeaseServiceFactoryDependency,
     file: UploadFile = File(...),
 ) -> UploadAndIndexResponse:
     content = await file.read()
@@ -327,13 +328,14 @@ async def upload_and_index_file(
     except S3StorageError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    # Index into its own per-file ChromaDB collection
+    # Index into its own per-file ChromaDB collection and generate summary
     try:
         result = rag_service_factory().index_file(
             s3_key=s3_key,
             filename=filename,
             content=content,
             size=len(content),
+            lease_service=lease_service_factory(),
         )
     except (ValidationError, RAGConfigurationError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
