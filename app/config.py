@@ -12,7 +12,7 @@ SECRET_NAME = "dev/ds-may26/LeaseSummariser"
 
 @lru_cache
 def _fetch_secrets() -> dict:
-    region = os.getenv("REGION_NAME", "eu-west-2")
+    region = os.getenv("AWS_REGION", "eu-west-2")
     client = boto3.client("secretsmanager", region_name=region)
     try:
         response = client.get_secret_value(SecretId=SECRET_NAME)
@@ -77,6 +77,18 @@ class LangfuseSettings(BaseSettings):
     )
 
 
+class ChatHistorySettings(BaseSettings):
+    chat_history_table_name: str | None = Field(
+        default=None,
+        alias="CHAT_HISTORY_TABLE_NAME",
+    )
+
+    model_config = SettingsConfigDict(
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings(**_fetch_secrets())
@@ -95,3 +107,8 @@ def get_rag_settings() -> RAGSettings:
 @lru_cache
 def get_langfuse_settings() -> LangfuseSettings:
     return LangfuseSettings(**_fetch_secrets())
+
+
+@lru_cache
+def get_chat_history_settings() -> ChatHistorySettings:
+    return ChatHistorySettings(**_fetch_secrets())

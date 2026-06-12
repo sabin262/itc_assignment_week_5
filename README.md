@@ -50,9 +50,10 @@ Optional RAG variables for S3 search and chat:
 AZURE_OPENAI_EMBEDDING_DEPLOYMENT=
 CHROMA_PERSIST_DIR=./chroma_db
 CHROMA_COLLECTION_NAME=lease_chunks
+CHAT_HISTORY_TABLE_NAME=lease-chat-history
 ```
 
-`AZURE_OPENAI_EMBEDDING_DEPLOYMENT` is required when using the RAG index, search, or chat endpoints. ChromaDB stores local vector index data in `CHROMA_PERSIST_DIR`; the RAG index also stores structured lease summaries in `lease_summaries.json` in the same directory. Docker Compose mounts `/app/chroma_db` as a named volume so indexed chunks and summaries survive API container restarts.
+`AZURE_OPENAI_EMBEDDING_DEPLOYMENT` is required when using the RAG index, search, or chat endpoints. ChromaDB stores local vector index data in `CHROMA_PERSIST_DIR`; the RAG index also stores structured lease summaries in `lease_summaries.json` in the same directory. Docker Compose mounts `/app/chroma_db` as a named volume so indexed chunks and summaries survive API container restarts. `CHAT_HISTORY_TABLE_NAME` enables durable RAG chat sessions in DynamoDB; the table must already exist with `pk` and `sk` as its primary key and a `gsi1` index on `gsi1pk` and `gsi1sk`. The DynamoDB client reads its AWS region from `.env` via `REGION_NAME`, with `AWS_REGION` and `AWS_DEFAULT_REGION` as fallbacks.
 
 Do not commit `.env`; it is ignored by `.gitignore` and `.dockerignore`.
 
@@ -107,7 +108,7 @@ The Streamlit app has a sidebar workspace selector:
 
 On the local page, you do not need to both paste text and upload a file. Select one input source per lease. Mixed compare inputs work too, for example Lease A pasted as text and Lease B uploaded as a PDF.
 
-On the S3 page, run `Index S3 Leases` after uploading or changing S3 lease files. `Search` queries all indexed leases. `Chat` can filter to selected S3 leases and keeps the current session's Q&A history in Streamlit session state. Chat uses both structured lease summaries and retrieved chunks, so field-based comparisons such as cheapest rent can use the indexed summaries. The S3 summarise and compare tabs can use either live S3 files or the already indexed lease text stored in ChromaDB.
+On the S3 page, run `Index S3 Leases` after uploading or changing S3 lease files. `Search` queries all indexed leases. `Chat` can filter to selected S3 leases and auto-saves Q&A sessions to DynamoDB when chat history is configured. Chat uses both structured lease summaries and retrieved chunks, so field-based comparisons such as cheapest rent can use the indexed summaries. The S3 summarise and compare tabs can use either live S3 files or the already indexed lease text stored in ChromaDB.
 
 Guardrail results are shown before the extracted summary, lease details, or comparison table. If Azure OpenAI flags unsupported extracted values, the frontend displays those warnings first so you can review grounding before relying on the rest of the response.
 

@@ -6,10 +6,13 @@ from fastapi.testclient import TestClient
 from app.document_parser import extract_text_from_file
 from app.main import (
     app,
+    get_chat_history_store_factory,
     get_lease_service_factory,
     get_rag_service_factory,
     get_s3_storage_factory,
 )
+from app.chat_history import ChatHistoryConfigurationError, ChatHistoryNotFoundError
+from app.chat_history import ChatHistoryError
 from app.rag_service import (
     RAGConfigurationError,
     RAGInvalidKeyError,
@@ -21,6 +24,10 @@ from app.schemas import (
     LeaseDifference,
     LeaseExtraction,
     RAGChatResponse,
+    RAGChatSessionListResponse,
+    RAGChatSessionResponse,
+    RAGChatSessionSummary,
+    RAGChatStoredMessage,
     RAGCitation,
     RAGIndexResponse,
     RAGSearchMatch,
@@ -236,6 +243,115 @@ class FakeRAGService:
         )
 
 
+class FakeChatHistoryStore:
+    sessions: dict[str, dict[str, object]] = {}
+    fail_configuration = False
+    fail_save = False
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.sessions = {}
+        cls.fail_configuration = False
+        cls.fail_save = False
+
+    def _raise_if_unconfigured(self) -> None:
+        if self.fail_configuration:
+            raise ChatHistoryConfigurationError(
+                "CHAT_HISTORY_TABLE_NAME is not configured."
+            )
+
+    def save_exchange(
+        self,
+        *,
+        session_id,
+        question: str,
+        lease_keys: list[str],
+        response: RAGChatResponse,
+    ) -> tuple[str, str]:
+        self._raise_if_unconfigured()
+        if self.fail_save:
+            raise ChatHistoryError("Could not save chat history: test failure.")
+        session_id = session_id or f"session-{len(self.sessions) + 1}"
+        saved_at = f"2026-01-01T00:00:0{len(self.sessions) + 1}+00:00"
+        session = self.sessions.setdefault(
+            session_id,
+            {
+                "session_id": session_id,
+                "title": question[:80],
+                "lease_keys": lease_keys,
+                "created_at": saved_at,
+                "updated_at": saved_at,
+                "messages": [],
+            },
+        )
+        session["lease_keys"] = lease_keys
+        session["updated_at"] = saved_at
+        session["messages"].extend(
+            [
+                RAGChatStoredMessage(
+                    role="user",
+                    content=question,
+                    created_at=saved_at,
+                ),
+                RAGChatStoredMessage(
+                    role="assistant",
+                    content=response.answer,
+                    citations=response.citations,
+                    verification=response.verification,
+                    warnings=response.warnings,
+                    created_at=saved_at,
+                ),
+            ]
+        )
+        return session_id, saved_at
+
+    def list_sessions(self) -> RAGChatSessionListResponse:
+        self._raise_if_unconfigured()
+        sessions = sorted(
+            self.sessions.values(),
+            key=lambda session: str(session["updated_at"]),
+            reverse=True,
+        )
+        return RAGChatSessionListResponse(
+            sessions=[
+                RAGChatSessionSummary(
+                    session_id=str(session["session_id"]),
+                    title=str(session["title"]),
+                    lease_keys=list(session["lease_keys"]),
+                    message_count=len(session["messages"]),
+                    created_at=str(session["created_at"]),
+                    updated_at=str(session["updated_at"]),
+                )
+                for session in sessions
+            ]
+        )
+
+    def get_session(self, session_id: str) -> RAGChatSessionResponse:
+        self._raise_if_unconfigured()
+        session = self.sessions.get(session_id)
+        if session is None:
+            raise ChatHistoryNotFoundError(
+                f"Saved chat session was not found: {session_id}"
+            )
+        return RAGChatSessionResponse(
+            session_id=str(session["session_id"]),
+            title=str(session["title"]),
+            lease_keys=list(session["lease_keys"]),
+            message_count=len(session["messages"]),
+            created_at=str(session["created_at"]),
+            updated_at=str(session["updated_at"]),
+            messages=list(session["messages"]),
+        )
+
+    def delete_session(self, session_id: str) -> None:
+        self._raise_if_unconfigured()
+        if session_id not in self.sessions:
+            raise ChatHistoryNotFoundError(
+                f"Saved chat session was not found: {session_id}"
+            )
+        del self.sessions[session_id]
+
+
 def override_service_factory():
     return FakeLeaseService
 
@@ -248,9 +364,16 @@ def override_rag_service_factory():
     return FakeRAGService
 
 
+def override_chat_history_store_factory():
+    return FakeChatHistoryStore
+
+
 app.dependency_overrides[get_lease_service_factory] = override_service_factory
 app.dependency_overrides[get_s3_storage_factory] = override_s3_storage_factory
 app.dependency_overrides[get_rag_service_factory] = override_rag_service_factory
+app.dependency_overrides[get_chat_history_store_factory] = (
+    override_chat_history_store_factory
+)
 client = TestClient(app)
 
 
@@ -509,6 +632,7 @@ def test_rag_search_returns_matching_lease_snippets():
 
 
 def test_rag_chat_filters_to_selected_lease_and_accepts_history():
+    FakeChatHistoryStore.reset()
     response = client.post(
         "/rag/chat",
         json={
@@ -523,6 +647,110 @@ def test_rag_chat_filters_to_selected_lease_and_accepts_history():
     body = response.json()
     assert body["answer"] == "Rent is due on the first day of each month."
     assert body["citations"][0]["key"] == "sample_leases/valid_lease_a.txt"
+    assert body["session_id"] == "session-1"
+    assert body["saved_at"] == "2026-01-01T00:00:01+00:00"
+
+
+def test_rag_chat_returns_answer_when_history_save_fails():
+    FakeChatHistoryStore.reset()
+    FakeChatHistoryStore.fail_save = True
+    try:
+        response = client.post(
+            "/rag/chat",
+            json={
+                "question": "When is rent due?",
+                "lease_keys": ["sample_leases/valid_lease_a.txt"],
+                "history": [{"role": "user", "content": "What is the rent?"}],
+                "top_k": 5,
+            },
+        )
+    finally:
+        FakeChatHistoryStore.reset()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == "Rent is due on the first day of each month."
+    assert body["session_id"] is None
+    assert body["saved_at"] is None
+    assert body["warnings"] == [
+        "Chat history could not be saved: Could not save chat history: test failure."
+    ]
+
+
+def test_rag_chat_appends_to_existing_saved_session():
+    FakeChatHistoryStore.reset()
+    first_response = client.post(
+        "/rag/chat",
+        json={
+            "question": "When is rent due?",
+            "lease_keys": ["sample_leases/valid_lease_a.txt"],
+            "history": [{"role": "user", "content": "What is the rent?"}],
+            "top_k": 5,
+        },
+    )
+    session_id = first_response.json()["session_id"]
+
+    second_response = client.post(
+        "/rag/chat",
+        json={
+            "session_id": session_id,
+            "question": "When is rent due?",
+            "lease_keys": ["sample_leases/valid_lease_a.txt"],
+            "history": [{"role": "user", "content": "What is the rent?"}],
+            "top_k": 5,
+        },
+    )
+
+    assert second_response.status_code == 200
+    assert second_response.json()["session_id"] == session_id
+    session = FakeChatHistoryStore.sessions[session_id]
+    assert len(session["messages"]) == 4
+
+
+def test_rag_chat_sessions_can_be_listed_loaded_and_deleted():
+    FakeChatHistoryStore.reset()
+    response = client.post(
+        "/rag/chat",
+        json={
+            "question": "When is rent due?",
+            "lease_keys": ["sample_leases/valid_lease_a.txt"],
+            "history": [{"role": "user", "content": "What is the rent?"}],
+            "top_k": 5,
+        },
+    )
+    session_id = response.json()["session_id"]
+
+    list_response = client.get("/rag/chat/sessions")
+    assert list_response.status_code == 200
+    assert list_response.json()["sessions"][0]["session_id"] == session_id
+
+    load_response = client.get(f"/rag/chat/sessions/{session_id}")
+    assert load_response.status_code == 200
+    loaded = load_response.json()
+    assert loaded["lease_keys"] == ["sample_leases/valid_lease_a.txt"]
+    assert [message["role"] for message in loaded["messages"]] == [
+        "user",
+        "assistant",
+    ]
+    assert loaded["messages"][1]["citations"][0]["key"] == "sample_leases/valid_lease_a.txt"
+
+    delete_response = client.delete(f"/rag/chat/sessions/{session_id}")
+    assert delete_response.status_code == 204
+    missing_response = client.get(f"/rag/chat/sessions/{session_id}")
+    assert missing_response.status_code == 404
+
+
+def test_rag_chat_history_missing_table_returns_clear_error():
+    FakeChatHistoryStore.reset()
+    FakeChatHistoryStore.fail_configuration = True
+
+    try:
+        response = client.get("/rag/chat/sessions")
+    finally:
+        FakeChatHistoryStore.reset()
+
+    assert response.status_code == 500
+    assert "CHAT_HISTORY_TABLE_NAME" in response.text
 
 
 def test_rag_config_errors_return_clear_500_response():
