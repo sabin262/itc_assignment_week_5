@@ -47,6 +47,17 @@ def validate_s3_key(value: str) -> str:
     return cleaned
 
 
+def validate_chat_session_id(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("Chat session id is required.")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", cleaned):
+        raise ValueError(
+            "Chat session id may only contain letters, numbers, underscores, and hyphens."
+        )
+    return cleaned
+
+
 class S3LeaseRequest(BaseModel):
     key: str = Field(..., description="S3 object key for the lease file.")
 
@@ -167,6 +178,7 @@ class RAGChatRequest(BaseModel):
     lease_keys: list[str] = Field(default_factory=list)
     history: list[RAGChatMessage] = Field(default_factory=list)
     top_k: int = Field(default=5, ge=1, le=20)
+    session_id: str | None = None
 
     @field_validator("question")
     @classmethod
@@ -177,6 +189,13 @@ class RAGChatRequest(BaseModel):
     @classmethod
     def validate_lease_keys(cls, value: list[str]) -> list[str]:
         return [validate_s3_key(key) for key in value]
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_session_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_chat_session_id(value)
 
     @model_validator(mode="after")
     def limit_history(self) -> "RAGChatRequest":
@@ -225,6 +244,34 @@ class RAGChatResponse(BaseModel):
     citations: list[RAGCitation]
     verification: GuardrailResult | None = None
     warnings: list[str] = Field(default_factory=list)
+    session_id: str | None = None
+    saved_at: str | None = None
+
+
+class RAGChatStoredMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    citations: list[RAGCitation] = Field(default_factory=list)
+    verification: GuardrailResult | None = None
+    warnings: list[str] = Field(default_factory=list)
+    created_at: str | None = None
+
+
+class RAGChatSessionSummary(BaseModel):
+    session_id: str
+    title: str
+    lease_keys: list[str] = Field(default_factory=list)
+    message_count: int = 0
+    created_at: str
+    updated_at: str
+
+
+class RAGChatSessionListResponse(BaseModel):
+    sessions: list[RAGChatSessionSummary]
+
+
+class RAGChatSessionResponse(RAGChatSessionSummary):
+    messages: list[RAGChatStoredMessage] = Field(default_factory=list)
 
 
 class LeaseExtraction(BaseModel):

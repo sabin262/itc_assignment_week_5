@@ -8,7 +8,18 @@ from app.langfuse_client import get_langfuse_client
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile
 from pydantic import ValidationError
 
-from app.config import get_rag_settings, get_s3_settings, get_settings
+from app.chat_history import (
+    ChatHistoryConfigurationError,
+    ChatHistoryError,
+    ChatHistoryNotFoundError,
+    DynamoDBChatHistoryStore,
+)
+from app.config import (
+    get_chat_history_settings,
+    get_rag_settings,
+    get_s3_settings,
+    get_settings,
+)
 from app.document_parser import DocumentParseError, extract_text_from_file
 from app.llm_client import AzureLeaseLLMClient, LLMResponseError
 from app.schemas import (
@@ -19,6 +30,8 @@ from app.schemas import (
     LeaseTextRequest,
     RAGChatRequest,
     RAGChatResponse,
+    RAGChatSessionListResponse,
+    RAGChatSessionResponse,
     RAGIndexJobStatus,
     RAGIndexResponse,
     RAGSearchRequest,
@@ -85,6 +98,11 @@ def create_rag_service() -> RAGService:
     )
 
 
+def create_chat_history_store() -> DynamoDBChatHistoryStore:
+    settings = get_chat_history_settings()
+    return DynamoDBChatHistoryStore(settings.chat_history_table_name)
+
+
 def get_lease_service_factory() -> Callable[[], LeaseSummariserService]:
     return create_lease_service
 
@@ -95,6 +113,10 @@ def get_s3_storage_factory() -> Callable[[], S3LeaseStorage]:
 
 def get_rag_service_factory() -> Callable[[], RAGService]:
     return create_rag_service
+
+
+def get_chat_history_store_factory() -> Callable[[], DynamoDBChatHistoryStore]:
+    return create_chat_history_store
 
 
 LeaseServiceFactoryDependency = Annotated[
@@ -110,6 +132,11 @@ S3StorageFactoryDependency = Annotated[
 RAGServiceFactoryDependency = Annotated[
     Callable[[], RAGService],
     Depends(get_rag_service_factory),
+]
+
+ChatHistoryStoreFactoryDependency = Annotated[
+    Callable[[], DynamoDBChatHistoryStore],
+    Depends(get_chat_history_store_factory),
 ]
 
 
@@ -276,13 +303,60 @@ def search_rag_leases(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.get("/rag/chat/sessions", response_model=RAGChatSessionListResponse)
+def list_rag_chat_sessions(
+    chat_history_store_factory: ChatHistoryStoreFactoryDependency,
+) -> RAGChatSessionListResponse:
+    try:
+        return chat_history_store_factory().list_sessions()
+    except ChatHistoryConfigurationError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except ChatHistoryError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/rag/chat/sessions/{session_id}", response_model=RAGChatSessionResponse)
+def load_rag_chat_session(
+    session_id: str,
+    chat_history_store_factory: ChatHistoryStoreFactoryDependency,
+) -> RAGChatSessionResponse:
+    try:
+        return chat_history_store_factory().get_session(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ChatHistoryConfigurationError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except ChatHistoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ChatHistoryError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.delete("/rag/chat/sessions/{session_id}", status_code=204)
+def delete_rag_chat_session(
+    session_id: str,
+    chat_history_store_factory: ChatHistoryStoreFactoryDependency,
+) -> None:
+    try:
+        chat_history_store_factory().delete_session(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ChatHistoryConfigurationError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except ChatHistoryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ChatHistoryError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.post("/rag/chat", response_model=RAGChatResponse)
 def chat_with_rag_leases(
     request: RAGChatRequest,
     rag_service_factory: RAGServiceFactoryDependency,
+    chat_history_store_factory: ChatHistoryStoreFactoryDependency,
 ) -> RAGChatResponse:
     try:
-        return rag_service_factory().chat(
+        response = rag_service_factory().chat(
             question=request.question,
             lease_keys=request.lease_keys,
             history=request.history,
@@ -292,6 +366,23 @@ def chat_with_rag_leases(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except (RAGError, LLMResponseError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    try:
+        session_id, saved_at = chat_history_store_factory().save_exchange(
+            session_id=request.session_id,
+            question=request.question,
+            lease_keys=request.lease_keys,
+            response=response,
+        )
+        response.session_id = session_id
+        response.saved_at = saved_at
+        return response
+    except ChatHistoryConfigurationError as exc:
+        response.warnings.append(f"Chat history could not be saved: {exc}")
+        return response
+    except ChatHistoryError as exc:
+        response.warnings.append(f"Chat history could not be saved: {exc}")
+        return response
 
 
 @app.post("/upload-and-index", response_model=UploadAndIndexResponse)
