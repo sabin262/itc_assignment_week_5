@@ -49,9 +49,10 @@ class RecordingStreamlit:
         self.calls.append(("spinner", text))
         return nullcontext()
 
-    def columns(self, count: int):
+    def columns(self, count: int | list[int]):
         self.calls.append(("columns", count))
-        return [nullcontext() for _ in range(count)]
+        column_count = count if isinstance(count, int) else len(count)
+        return [nullcontext() for _ in range(column_count)]
 
     def container(self, **kwargs):
         self.calls.append(("container", kwargs))
