@@ -198,7 +198,11 @@ def summarise_s3_lease(
     request: S3LeaseRequest,
     service_factory: LeaseServiceFactoryDependency,
     s3_storage_factory: S3StorageFactoryDependency,
+    rag_service_factory: RAGServiceFactoryDependency,
 ) -> SummariseResponse:
+    stored = _get_stored_summary(request.key, rag_service_factory)
+    if stored is not None:
+        return stored
     lease_text = _extract_s3_text(request.key, s3_storage_factory)
     return _summarise_text(lease_text, service_factory)
 
@@ -220,6 +224,9 @@ def summarise_indexed_lease(
     service_factory: LeaseServiceFactoryDependency,
     rag_service_factory: RAGServiceFactoryDependency,
 ) -> SummariseResponse:
+    stored = _get_stored_summary(request.key, rag_service_factory)
+    if stored is not None:
+        return stored
     lease_text = _extract_indexed_text(request.key, rag_service_factory)
     return _summarise_text(lease_text, service_factory)
 
@@ -533,6 +540,16 @@ def _get_index_job_state() -> RAGIndexJobStatus:
 def _set_index_job_state_unlocked(state: RAGIndexJobStatus) -> None:
     global _INDEX_JOB_STATE
     _INDEX_JOB_STATE = state
+
+
+def _get_stored_summary(
+    key: str,
+    rag_service_factory: Callable[[], RAGService],
+) -> SummariseResponse | None:
+    try:
+        return rag_service_factory().get_stored_summary(key)
+    except Exception:
+        return None
 
 
 def _summarise_text(

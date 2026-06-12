@@ -812,6 +812,10 @@ class RAGService:
                 self._langfuse.flush()
 
 
+    def get_stored_summary(self, key: str) -> SummariseResponse | None:
+        records = self._summary_store.list_summaries(self._s3_prefix, [key])
+        return records[0].summary if records else None
+
     def lease_text_from_index(self, key: str) -> str:
         validated_key = _validate_indexed_key(key, self._s3_prefix)
         chunks = self._vector_store.chunks_for_key(validated_key)
