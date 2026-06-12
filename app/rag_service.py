@@ -261,6 +261,25 @@ class ChromaLeaseVectorStore:
 
         return sorted(chunks, key=lambda chunk: chunk.chunk_index)
 
+    def chunks_for_prefix(self, prefix: str) -> list[LeaseChunk]:
+        try:
+            results = self._collection.get(
+                where={"s3_prefix": prefix},
+                include=["documents", "metadatas"],
+            )
+        except Exception as exc:
+            raise RAGError("Could not load indexed lease chunks.") from exc
+
+        documents = results.get("documents") or []
+        metadatas = results.get("metadatas") or []
+        chunks: list[LeaseChunk] = []
+        for document, metadata in zip(documents, metadatas):
+            if not isinstance(metadata, dict):
+                continue
+            chunks.append(_chunk_from_result(document, metadata, None))
+
+        return sorted(chunks, key=lambda chunk: (chunk.key, chunk.chunk_index))
+
     def status(self) -> RAGStatusResponse:
         data = self._collection.get(include=["metadatas"])
         metadatas = data.get("metadatas") or []
@@ -439,49 +458,146 @@ class RAGService:
         status.indexed_summary_count = self._summary_store.count(self._s3_prefix)
         return status
 
-    def index_s3_leases(self, s3_storage) -> RAGIndexResponse:
+    def index_s3_leases(
+        self,
+        s3_storage,
+        lease_service=None,
+        progress_callback: IndexProgressCallback | None = None,
+    ) -> RAGIndexResponse:
         indexed_at = datetime.now(UTC).isoformat()
         s3_files = s3_storage.list_lease_files()
+        progress_total = max(len(s3_files) + 2, 2)
         chunks: list[LeaseChunk] = []
+        summaries: list[LeaseSummaryRecord] = []
         skipped_files: list[str] = []
         failed_files: list[str] = []
+        summary_failed_files: list[str] = []
 
+        _report_index_progress(
+            progress_callback,
+            0,
+            progress_total,
+            "Preparing indexed lease store.",
+        )
         self._vector_store.reset_prefix(self._s3_prefix)
+        self._summary_store.reset_prefix(self._s3_prefix)
 
-        for s3_file in s3_files:
+        for index, s3_file in enumerate(s3_files, start=1):
+            filename_for_progress = s3_file.filename or PurePosixPath(s3_file.key).name
+            _report_index_progress(
+                progress_callback,
+                index - 1,
+                progress_total,
+                f"Processing {filename_for_progress}.",
+                s3_file.key,
+            )
             try:
                 filename, content = s3_storage.get_file(s3_file.key)
                 text = extract_text_from_file(filename, content)
+                validated_text = validate_lease_text(text)
             except DocumentParseError:
                 failed_files.append(s3_file.key)
+                _report_index_progress(
+                    progress_callback,
+                    index,
+                    progress_total,
+                    f"Skipped {filename_for_progress}.",
+                    s3_file.key,
+                )
+                continue
+            except ValueError:
+                skipped_files.append(s3_file.key)
+                _report_index_progress(
+                    progress_callback,
+                    index,
+                    progress_total,
+                    f"Skipped {filename_for_progress}.",
+                    s3_file.key,
+                )
                 continue
             except Exception:
                 failed_files.append(s3_file.key)
+                _report_index_progress(
+                    progress_callback,
+                    index,
+                    progress_total,
+                    f"Failed {filename_for_progress}.",
+                    s3_file.key,
+                )
                 continue
 
-            lease_chunks = _chunks_for_file(s3_file, text, self._s3_prefix, indexed_at)
+            lease_chunks = _chunks_for_file(
+                s3_file,
+                validated_text,
+                self._s3_prefix,
+                indexed_at,
+            )
             if not lease_chunks:
                 skipped_files.append(s3_file.key)
+                _report_index_progress(
+                    progress_callback,
+                    index,
+                    progress_total,
+                    f"Skipped {filename_for_progress}.",
+                    s3_file.key,
+                )
                 continue
             chunks.extend(lease_chunks)
+
+            if lease_service is not None:
+                try:
+                    summary = lease_service.summarise(validated_text)
+                    summaries.append(
+                        _summary_record_for_file(
+                            s3_file,
+                            summary,
+                            self._s3_prefix,
+                            indexed_at,
+                        )
+                    )
+                except Exception:
+                    summary_failed_files.append(s3_file.key)
+
+            _report_index_progress(
+                progress_callback,
+                index,
+                progress_total,
+                f"Processed {filename_for_progress}.",
+                s3_file.key,
+            )
 
         trace = self._langfuse.trace(name="rag-index") if self._langfuse else None
         try:
             embeddings: list[list[float]] = []
+            _report_index_progress(
+                progress_callback,
+                len(s3_files) + 1,
+                progress_total,
+                "Embedding lease chunks.",
+            )
             for batch in _batches([chunk.text for chunk in chunks], EMBEDDING_BATCH_SIZE):
                 embeddings.extend(self._embedding_client.embed_texts(batch, trace=trace))
 
             self._vector_store.upsert_chunks(chunks, embeddings)
+            self._summary_store.upsert_summaries(summaries)
         finally:
             if self._langfuse:
                 self._langfuse.flush()
 
         indexed_keys = {chunk.key for chunk in chunks}
+        _report_index_progress(
+            progress_callback,
+            progress_total,
+            progress_total,
+            "Indexing completed.",
+        )
         return RAGIndexResponse(
             indexed_lease_count=len(indexed_keys),
             indexed_chunk_count=len(chunks),
             skipped_files=skipped_files,
             failed_files=failed_files,
+            summarised_lease_count=len(summaries),
+            summary_failed_files=summary_failed_files,
         )
 
     def search(self, question: str, top_k: int) -> RAGSearchResponse:
@@ -516,25 +632,53 @@ class RAGService:
     ) -> RAGChatResponse:
         trace = self._langfuse.trace(name="rag-chat") if self._langfuse else None
         try:
-            summaries = self._summary_store.list_summaries(self._s3_prefix, lease_keys or None)
+            validated_lease_keys = [
+                _validate_indexed_key(key, self._s3_prefix)
+                for key in lease_keys
+            ]
+            summaries = self._summary_store.list_summaries(
+                self._s3_prefix,
+                validated_lease_keys or None,
+            )
             aggregate = _answer_summary_aggregate_question(question, summaries)
             if aggregate is not None:
                 return aggregate
-            query_embedding = self._embedding_client.embed_texts([question], trace=trace)[0]
-            chunks = self._vector_store.query(
-                query_embedding,
-                top_k,
-                lease_keys=lease_keys,
-            )
+            chunks: list[LeaseChunk]
+            if _rent_aggregate_mode(question) is not None:
+                chunks = self._reconstructed_chunks_for_chat(validated_lease_keys)
+            else:
+                query_embedding = self._embedding_client.embed_texts([question], trace=trace)[0]
+                chunks = self._vector_store.query(
+                    query_embedding,
+                    top_k,
+                    lease_keys=validated_lease_keys,
+                )
+                if not chunks and not summaries:
+                    chunks = self._reconstructed_chunks_for_chat(validated_lease_keys)
             answer = self._chat_client.answer(question, history, chunks, summaries, trace=trace)
             return RAGChatResponse(
                 question=question,
                 answer=answer.answer,
-                citations=[_citation(chunk) for chunk in chunks],
+                citations=[
+                    *[_summary_citation(summary) for summary in summaries],
+                    *[_citation(chunk) for chunk in chunks],
+                ],
             )
         finally:
             if self._langfuse:
                 self._langfuse.flush()
+
+    def _reconstructed_chunks_for_chat(
+        self,
+        lease_keys: list[str],
+    ) -> list[LeaseChunk]:
+        source_chunks: list[LeaseChunk] = []
+        if lease_keys:
+            for key in lease_keys:
+                source_chunks.extend(self._vector_store.chunks_for_key(key))
+        else:
+            source_chunks = self._vector_store.chunks_for_prefix(self._s3_prefix)
+        return _merge_chunks_by_lease(source_chunks)
 
 
 def create_rag_service(
@@ -612,7 +756,7 @@ def _build_chat_messages(
         for summary in summaries
     )
     chunk_context = "\n\n".join(
-        f"[{index}] {chunk.filename} ({chunk.key}), chunk {chunk.chunk_index}:\n"
+        f"[{index}] {chunk.filename} ({chunk.key}), {_chunk_context_label(chunk)}:\n"
         f"{chunk.text}"
         for index, chunk in enumerate(chunks, start=1)
     )
@@ -666,6 +810,12 @@ def _citation(chunk: LeaseChunk) -> RAGCitation:
         chunk_index=chunk.chunk_index,
         source_type="chunk",
     )
+
+
+def _chunk_context_label(chunk: LeaseChunk) -> str:
+    if chunk.chunk_index < 0:
+        return "reconstructed indexed lease text"
+    return f"chunk {chunk.chunk_index}"
 
 
 def _summary_citation(summary: LeaseSummaryRecord) -> RAGCitation:
@@ -757,25 +907,8 @@ def _answer_summary_aggregate_question(
         if summary.monthly_rent_amount_numeric is None
     ]
 
-    if not summaries:
-        return RAGChatResponse(
-            question=question,
-            answer=(
-                "I do not have indexed lease summaries available for the selected "
-                "leases, so I cannot compare monthly rent values."
-            ),
-            citations=[],
-        )
-
-    if not candidates:
-        return RAGChatResponse(
-            question=question,
-            answer=(
-                "The indexed lease summaries do not contain enough monthly rent "
-                "information to answer that comparison."
-            ),
-            citations=[_summary_citation(summary) for summary in summaries],
-        )
+    if not summaries or not candidates:
+        return None
 
     selected = min(candidates, key=lambda item: item.monthly_rent_amount_numeric)
     adjective = "cheapest"
@@ -884,6 +1017,35 @@ def _merge_indexed_chunks(chunks: list[LeaseChunk]) -> str:
             continue
         _append_without_overlap(merged_words, chunk_words)
     return " ".join(merged_words)
+
+
+def _merge_chunks_by_lease(chunks: list[LeaseChunk]) -> list[LeaseChunk]:
+    grouped_chunks: dict[str, list[LeaseChunk]] = {}
+    for chunk in chunks:
+        grouped_chunks.setdefault(chunk.key, []).append(chunk)
+
+    merged_chunks: list[LeaseChunk] = []
+    for key in sorted(grouped_chunks):
+        lease_chunks = sorted(
+            grouped_chunks[key],
+            key=lambda chunk: chunk.chunk_index,
+        )
+        first_chunk = lease_chunks[0]
+        merged_chunks.append(
+            LeaseChunk(
+                key=first_chunk.key,
+                filename=first_chunk.filename,
+                text=_merge_indexed_chunks(lease_chunks),
+                chunk_index=-1,
+                s3_prefix=first_chunk.s3_prefix,
+                source_extension=first_chunk.source_extension,
+                size=first_chunk.size,
+                last_modified=first_chunk.last_modified,
+                indexed_at=first_chunk.indexed_at,
+                score=None,
+            )
+        )
+    return merged_chunks
 
 
 def _append_without_overlap(
