@@ -179,28 +179,6 @@ class RAGChatAnswer(BaseModel):
     citations: list[RAGCitation] = Field(default_factory=list)
 
 
-class RAGChatResponse(BaseModel):
-    question: str
-    answer: str
-    citations: list[RAGCitation]
-
-
-class LeaseExtraction(BaseModel):
-    tenant_name: str | None = None
-    landlord_name: str | None = None
-    property_address: str | None = None
-    lease_start_date: str | None = None
-    lease_end_date: str | None = None
-    monthly_rent_amount: str | None = None
-    rent_payment_due_date: str | None = None
-    security_deposit_amount: str | None = None
-    notice_period_to_vacate: str | None = None
-    tenant_obligations: list[str] | None = None
-    landlord_obligations: list[str] | None = None
-    unusual_clauses: list[str] | None = None
-    plain_english_summary: str | None = None
-
-
 LeaseFieldValue: TypeAlias = str | list[str] | None
 
 
@@ -222,6 +200,29 @@ class GuardrailResult(BaseModel):
     overall_supported: bool
     checks: list[VerificationItem]
 
+
+class RAGChatResponse(BaseModel):
+    question: str
+    answer: str
+    citations: list[RAGCitation]
+    verification: GuardrailResult | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class LeaseExtraction(BaseModel):
+    tenant_name: str | None = None
+    landlord_name: str | None = None
+    property_address: str | None = None
+    lease_start_date: str | None = None
+    lease_end_date: str | None = None
+    monthly_rent_amount: str | None = None
+    rent_payment_due_date: str | None = None
+    security_deposit_amount: str | None = None
+    notice_period_to_vacate: str | None = None
+    tenant_obligations: list[str] | None = None
+    landlord_obligations: list[str] | None = None
+    unusual_clauses: list[str] | None = None
+    plain_english_summary: str | None = None
 
 class SummariseResponse(BaseModel):
     extraction: LeaseExtraction

@@ -411,8 +411,13 @@ def render_s3_chat_tab() -> None:
                 "content": response.get("answer", ""),
                 "citations": response.get("citations") or [],
             }
+            if response.get("verification") is not None:
+                assistant_message["verification"] = response.get("verification")
+            if response.get("warnings"):
+                assistant_message["warnings"] = response.get("warnings") or []
             history.append(assistant_message)
             response_placeholder.markdown(str(assistant_message["content"]))
+            _render_rag_chat_warnings(assistant_message)
             if show_sources:
                 _render_rag_citations(assistant_message.get("citations") or [])
 
@@ -452,8 +457,21 @@ def _render_chat_message(item: object, show_sources: bool) -> None:
 
     with st.chat_message(role):
         st.markdown(content)
-        if show_sources and role == "assistant":
-            _render_rag_citations(item.get("citations") or [])
+        if role == "assistant":
+            _render_rag_chat_warnings(item)
+            if show_sources:
+                _render_rag_citations(item.get("citations") or [])
+
+
+def _render_rag_chat_warnings(item: dict[str, object]) -> None:
+    warnings = item.get("warnings") or []
+    if warnings:
+        st.warning("\n".join(f"- {warning}" for warning in warnings))
+        return
+
+    verification = item.get("verification")
+    if isinstance(verification, dict) and verification.get("overall_supported") is False:
+        st.warning("The chat answer needs review against the indexed lease context.")
 
 
 def _render_rag_citations(citations: list[object]) -> None:

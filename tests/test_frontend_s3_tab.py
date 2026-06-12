@@ -486,3 +486,45 @@ def test_s3_chat_toggle_shows_sources_after_assistant_response(monkeypatch):
     assert sources_call in fake_st.calls
     assert fake_st.calls.index(assistant_call) < fake_st.calls.index(sources_call)
     assert ("write", "One indoor cat is permitted.") in fake_st.calls
+
+
+def test_s3_chat_displays_grounding_warnings(monkeypatch):
+    leases = s3_leases()
+    fake_st = RecordingStreamlit()
+    fake_st.chat_inputs["rag_chat_question"] = "Can I sublet?"
+    monkeypatch.setattr(tabs, "st", fake_st)
+    monkeypatch.setattr(tabs, "call_api_get", lambda path: leases)
+
+    def fake_call_api(path, payload):
+        return {
+            "question": payload["question"],
+            "answer": "I could not verify the generated answer against the indexed lease context.",
+            "citations": [],
+            "verification": {
+                "overall_supported": False,
+                "checks": [
+                    {
+                        "field_name": "answer",
+                        "status": "unsupported",
+                        "extracted_value": "Subletting is allowed.",
+                        "evidence": None,
+                        "explanation": "The context does not mention subletting.",
+                    }
+                ],
+            },
+            "warnings": [
+                "answer was flagged as unsupported by the indexed lease context."
+            ],
+        }
+
+    monkeypatch.setattr(tabs, "call_api", fake_call_api)
+
+    tabs.render_s3_chat_tab()
+
+    assert (
+        "warning",
+        "- answer was flagged as unsupported by the indexed lease context.",
+    ) in fake_st.calls
+    assert fake_st.session_state["rag_chat_history"][-1]["warnings"] == [
+        "answer was flagged as unsupported by the indexed lease context."
+    ]
