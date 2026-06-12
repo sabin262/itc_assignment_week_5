@@ -6,7 +6,7 @@ import streamlit as st
 from frontend.pdf_export import build_compare_pdf, build_summary_pdf
 
 
-def render_summary_response(response: dict[str, Any], heading: str = "Result") -> None:
+def render_summary_response(response: dict[str, Any], heading: str = "Result", key_prefix: str = "") -> None:
     extraction = response.get("extraction", {})
     verification = response.get("verification", {})
     warnings = response.get("warnings", [])
@@ -22,6 +22,7 @@ def render_summary_response(response: dict[str, Any], heading: str = "Result") -
             file_name="lease_summary.pdf",
             mime="application/pdf",
             use_container_width=True,
+            key=f"{key_prefix}download_summary_{heading}",
         )
 
     render_guardrail_checks(verification, warnings)
@@ -121,6 +122,7 @@ def render_compare_response(response: dict[str, Any]) -> None:
             file_name="lease_comparison.pdf",
             mime="application/pdf",
             use_container_width=True,
+            key="download_comparison",
         )
 
     summary = comparison.get("summary")
@@ -144,9 +146,9 @@ def render_compare_response(response: dict[str, Any]) -> None:
 
     lease_a_tab, lease_b_tab, raw_tab = st.tabs(["Lease A Result", "Lease B Result", "Raw JSON"])
     with lease_a_tab:
-        render_summary_response(response.get("lease_a", {}), heading="Lease A")
+        render_summary_response(response.get("lease_a", {}), heading="Lease A", key_prefix="compare_")
     with lease_b_tab:
-        render_summary_response(response.get("lease_b", {}), heading="Lease B")
+        render_summary_response(response.get("lease_b", {}), heading="Lease B", key_prefix="compare_")
     with raw_tab:
         st.json(response)
 
