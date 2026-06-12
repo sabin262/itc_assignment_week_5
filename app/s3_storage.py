@@ -61,6 +61,19 @@ class S3LeaseStorage:
 
         return lease_files
 
+    def upload_file(self, filename: str, content: bytes) -> str:
+        """Upload a file under the configured S3 prefix and return its S3 key."""
+        bucket = self._require_bucket()
+        safe_name = PurePosixPath(filename).name
+        key = f"{self._prefix}/{safe_name}" if self._prefix else safe_name
+        print(f"[S3] uploading {len(content)} bytes -> s3://{bucket}/{key}")
+        try:
+            self._s3_client.put_object(Bucket=bucket, Key=key, Body=content)
+        except (BotoCoreError, ClientError) as exc:
+            raise S3StorageError(f"Could not upload file to S3: {safe_name}") from exc
+        print(f"[S3] upload complete: {key!r}")
+        return key
+
     def get_file(self, key: str) -> tuple[str, bytes]:
         bucket = self._require_bucket()
         validated_key = self._validate_key(key)

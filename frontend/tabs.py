@@ -201,21 +201,53 @@ def render_s3_compare_tab() -> None:
 
 
 def render_s3_index_tab() -> None:
+    _, refresh_col = st.columns([6, 1])
+    with refresh_col:
+        st.button("Refresh", use_container_width=True, key="index_tab_refresh")
+
     status = call_api_get("/rag/status")
     if isinstance(status, dict):
         left, middle, summary_column, right = st.columns(4)
         with left:
-            st.metric("Indexed leases", status.get("indexed_lease_count", 0))
+            st.metric("Indexed Leases", status.get("indexed_lease_count", 0))
         with middle:
-            st.metric("Chunks", status.get("chunk_count", 0))
+            st.metric("Total Chunks", status.get("chunk_count", 0))
         with summary_column:
             st.metric("Summaries", status.get("indexed_summary_count", 0))
         with right:
-            st.metric("Collection", status.get("collection_name", "lease_chunks"))
+            st.metric("Collections", status.get("collection_name", "per-file"))
 
         last_indexed_at = status.get("last_indexed_at")
         if last_indexed_at:
             st.caption(f"Last indexed: {last_indexed_at}")
+
+        file_collections = status.get("file_collections") or []
+        if file_collections:
+            st.subheader("Per-File Collections")
+            rows = [
+                {
+                    "Filename": fc.get("filename", ""),
+                    "S3 Key": fc.get("s3_key", ""),
+                    "Collection": fc.get("collection_name", ""),
+                    "Chunks": fc.get("chunk_count", 0),
+                    "Indexed At": (fc.get("indexed_at") or "")[:19].replace("T", " "),
+                }
+                for fc in file_collections
+            ]
+            st.dataframe(
+                rows,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Filename": st.column_config.TextColumn("Filename", width="medium"),
+                    "S3 Key": st.column_config.TextColumn("S3 Key", width="medium"),
+                    "Collection": st.column_config.TextColumn("Collection Name", width="large"),
+                    "Chunks": st.column_config.NumberColumn("Chunks", width="small"),
+                    "Indexed At": st.column_config.TextColumn("Indexed At", width="medium"),
+                },
+            )
+        else:
+            st.info("No collections indexed yet. Click 'Index S3 Leases' to start.")
 
     job_status = call_api_get("/rag/index/status")
     job_is_running = _render_s3_index_job_status(job_status)
@@ -605,6 +637,85 @@ def _render_rag_citations(citations: list[object]) -> None:
         source_type = str(citation.get("source_type") or "chunk")
         st.caption(f"{citation.get('key', '')} ({source_type})")
         st.write(citation.get("snippet", ""))
+
+
+def render_upload_index_tab() -> None:
+    st.subheader("Upload & Index a Lease File")
+    st.caption("Upload a .txt, .pdf, or .docx file. It will be validated (100+ words), stored in S3, chunked, and added to the vector index as its own collection.")
+
+    uploaded = st.file_uploader(
+        "Choose a lease file",
+        type=["txt", "pdf", "docx"],
+        key="upload_index_file",
+    )
+
+    if uploaded is not None:
+        file_size_kb = round(uploaded.size / 1024, 1)
+        st.info(f"Selected: **{uploaded.name}** ({file_size_kb} KB)")
+
+    submitted = st.button(
+        "Upload & Index",
+        type="primary",
+        use_container_width=True,
+        disabled=uploaded is None,
+    )
+
+    if not submitted:
+        return
+
+    if uploaded is None:
+        st.error("Select a file before uploading.")
+        return
+
+    with st.spinner(f"Uploading and indexing {uploaded.name}..."):
+        response = call_api_files(
+            "/upload-and-index",
+            {"file": (uploaded.name, uploaded.getvalue(), uploaded.type or "application/octet-stream")},
+        )
+
+    if response is None:
+        return
+
+    st.success("File uploaded and indexed successfully!")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Chunks created", response.get("chunk_count", 0))
+    with col2:
+        st.metric("Word count", response.get("word_count", 0))
+    with col3:
+        st.metric("Collection", "new")
+
+    st.dataframe(
+        [
+            {
+                "Field": "Filename",
+                "Value": response.get("filename", ""),
+            },
+            {
+                "Field": "S3 Key",
+                "Value": response.get("s3_key", ""),
+            },
+            {
+                "Field": "Collection Name",
+                "Value": response.get("collection_name", ""),
+            },
+            {
+                "Field": "Chunks",
+                "Value": str(response.get("chunk_count", 0)),
+            },
+            {
+                "Field": "Word Count",
+                "Value": str(response.get("word_count", 0)),
+            },
+        ],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Field": st.column_config.TextColumn("Field", width="small"),
+            "Value": st.column_config.TextColumn("Value", width="large"),
+        },
+    )
 
 
 def _s3_lease_options(response: object) -> list[S3LeaseOption]:
