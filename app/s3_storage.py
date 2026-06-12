@@ -57,7 +57,9 @@ class S3LeaseStorage:
                         )
                     )
         except (BotoCoreError, ClientError) as exc:
-            raise S3StorageError("Could not list S3 lease files.") from exc
+            raise S3StorageError(
+                _s3_error_message("Could not list S3 lease files", exc)
+            ) from exc
 
         return lease_files
 
@@ -70,7 +72,9 @@ class S3LeaseStorage:
         try:
             self._s3_client.put_object(Bucket=bucket, Key=key, Body=content)
         except (BotoCoreError, ClientError) as exc:
-            raise S3StorageError(f"Could not upload file to S3: {safe_name}") from exc
+            raise S3StorageError(
+                _s3_error_message(f"Could not upload file to S3: {safe_name}", exc)
+            ) from exc
         print(f"[S3] upload complete: {key!r}")
         return key
 
@@ -87,11 +91,17 @@ class S3LeaseStorage:
                     f"S3 lease file was not found: {validated_key}"
                 ) from exc
             raise S3StorageError(
-                f"Could not download S3 lease file: {validated_key}"
+                _s3_error_message(
+                    f"Could not download S3 lease file: {validated_key}",
+                    exc,
+                )
             ) from exc
         except BotoCoreError as exc:
             raise S3StorageError(
-                f"Could not download S3 lease file: {validated_key}"
+                _s3_error_message(
+                    f"Could not download S3 lease file: {validated_key}",
+                    exc,
+                )
             ) from exc
 
         return PurePosixPath(validated_key).name, content
@@ -140,3 +150,12 @@ def _is_supported_key(key: str) -> bool:
 def _is_not_found_error(exc: ClientError) -> bool:
     code = str(exc.response.get("Error", {}).get("Code", ""))
     return code in {"404", "NoSuchKey", "NotFound"}
+
+
+def _s3_error_message(operation: str, exc: Exception) -> str:
+    if isinstance(exc, ClientError):
+        error = exc.response.get("Error", {})
+        code = str(error.get("Code") or "ClientError")
+        message = str(error.get("Message") or exc)
+        return f"{operation}: S3 {code}: {message}"
+    return f"{operation}: {exc}"
