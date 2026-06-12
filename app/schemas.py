@@ -80,12 +80,29 @@ def validate_question(value: str) -> str:
     return cleaned
 
 
+class FileCollectionInfo(BaseModel):
+    s3_key: str
+    filename: str
+    collection_name: str
+    chunk_count: int
+    indexed_at: str | None = None
+
+
 class RAGStatusResponse(BaseModel):
     collection_name: str
     indexed_lease_count: int
     chunk_count: int
     last_indexed_at: str | None = None
     indexed_summary_count: int = 0
+    file_collections: list[FileCollectionInfo] = Field(default_factory=list)
+
+
+class UploadAndIndexResponse(BaseModel):
+    s3_key: str
+    filename: str
+    collection_name: str
+    chunk_count: int
+    word_count: int
 
 
 class RAGIndexResponse(BaseModel):

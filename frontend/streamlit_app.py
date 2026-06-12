@@ -9,6 +9,7 @@ from frontend.tabs import (
     render_s3_search_tab,
     render_s3_summarise_tab,
     render_summarise_tab,
+    render_upload_index_tab,
 )
 
 
@@ -31,9 +32,10 @@ def main() -> None:
             summarise_tab,
             compare_tab,
             index_tab,
+            upload_tab,
             search_tab,
             chat_tab,
-        ) = st.tabs(["Summarise", "Compare", "Index", "Search", "Chat"])
+        ) = st.tabs(["Summarise", "Compare", "Index", "Upload & Index", "Search", "Chat"])
 
         with summarise_tab:
             render_s3_summarise_tab()
@@ -43,6 +45,9 @@ def main() -> None:
 
         with index_tab:
             render_s3_index_tab()
+
+        with upload_tab:
+            render_upload_index_tab()
 
         with search_tab:
             render_s3_search_tab()
