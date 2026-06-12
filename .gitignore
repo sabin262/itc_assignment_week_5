@@ -5,3 +5,8 @@ __pycache__/
 *.py[cod]
 chroma_db/
 
+# Claude Code
+.claude/
+CLAUDE.md
+MEMORY.md
+memory/
