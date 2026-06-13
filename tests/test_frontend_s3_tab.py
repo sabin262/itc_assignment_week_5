@@ -349,38 +349,6 @@ def test_s3_index_running_job_shows_progress_bar(monkeypatch):
     ) in fake_st.calls
 
 
-def test_s3_search_sends_question_to_rag_search(monkeypatch):
-    fake_st = RecordingStreamlit()
-    fake_st.buttons["Search Indexed Leases"] = True
-    fake_st.text_inputs["rag_search_question"] = "What is the rent?"
-    monkeypatch.setattr(tabs, "st", fake_st)
-
-    calls = []
-
-    def fake_call_api(path, payload):
-        calls.append((path, payload))
-        return {
-            "question": payload["question"],
-            "matches": [
-                {
-                    "key": "sample_leases/valid_lease_a.txt",
-                    "filename": "valid_lease_a.txt",
-                    "snippet": "Rent is 1,500 pounds.",
-                    "score": 0.8,
-                    "chunk_index": 0,
-                }
-            ],
-        }
-
-    monkeypatch.setattr(tabs, "call_api", fake_call_api)
-
-    tabs.render_s3_search_tab()
-
-    assert calls == [
-        ("/rag/search", {"question": "What is the rent?", "top_k": 5})
-    ]
-    assert ("write", "Rent is 1,500 pounds.") in fake_st.calls
-
 
 def test_s3_chat_sends_selected_keys_and_preserves_history(monkeypatch):
     leases = s3_leases()

@@ -26,6 +26,7 @@ from app.schemas import (
     RAGChatMessage,
     RAGChatResponse,
     RAGCitation,
+    RAGEvalResult,
     RAGIndexResponse,
     RAGSearchMatch,
     RAGSearchResponse,
@@ -89,6 +90,7 @@ class LeaseSummaryRecord:
 
 class AzureEmbeddingClient:
     def __init__(self, settings: Settings):
+        self._settings = settings
         self._client = AzureOpenAI(
             api_key=settings.azure_openai_api_key,
             azure_endpoint=settings.azure_openai_endpoint,
@@ -873,6 +875,24 @@ class RAGService:
                     "lease context, so I cannot answer that confidently from the "
                     "available lease information."
                 )
+
+            eval_result: RAGEvalResult | None = None
+            try:
+                from app.evaluation_service import evaluate_rag_response
+                from app.llm_client import get_langchain_embeddings, get_langchain_llm
+
+                lc_llm = get_langchain_llm(self._embedding_client._settings)
+                lc_emb = get_langchain_embeddings(self._embedding_client._settings)
+                eval_result = evaluate_rag_response(
+                    question=question,
+                    answer=response_answer,
+                    contexts=[c.text for c in chunks],
+                    langchain_llm=lc_llm,
+                    langchain_embeddings=lc_emb,
+                )
+            except Exception:
+                pass
+
             return RAGChatResponse(
                 question=question,
                 answer=response_answer,
@@ -882,6 +902,7 @@ class RAGService:
                 ],
                 verification=verification,
                 warnings=warnings,
+                eval=eval_result,
             )
         finally:
             if self._langfuse:
@@ -949,10 +970,30 @@ def split_text_into_chunks(
     chunk_words: int = CHUNK_WORDS,
     overlap_words: int = CHUNK_OVERLAP_WORDS,
 ) -> list[str]:
+    """
+    Split text using LangChain's RecursiveCharacterTextSplitter so chunks
+    respect paragraph/sentence boundaries rather than raw word counts.
+    Falls back to the original word-split algorithm when LangChain is absent.
+    """
+    try:
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+        # Approximate chars from word counts (avg English word ≈ 5 chars + space)
+        chunk_size = chunk_words * 6
+        overlap_size = overlap_words * 6
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=overlap_size,
+            separators=["\n\n", "\n", ". ", " ", ""],
+        )
+        return splitter.split_text(text)
+    except ImportError:
+        pass
+
+    # Original fallback
     words = text.split()
     if not words:
         return []
-
     chunks: list[str] = []
     start = 0
     while start < len(words):
@@ -962,6 +1003,26 @@ def split_text_into_chunks(
             break
         start = max(end - overlap_words, start + 1)
     return chunks
+
+
+def langchain_documents_from_chunks(chunks: list[LeaseChunk]) -> list[Any]:
+    """Convert LeaseChunk objects to LangChain Document objects for RAGAS."""
+    try:
+        from langchain_core.documents import Document
+    except ImportError:
+        return []
+
+    return [
+        Document(
+            page_content=chunk.text,
+            metadata={
+                "s3_key": chunk.key,
+                "filename": chunk.filename,
+                "chunk_index": chunk.chunk_index,
+            },
+        )
+        for chunk in chunks
+    ]
 
 
 def _build_chat_messages(

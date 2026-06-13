@@ -238,12 +238,33 @@ class GuardrailResult(BaseModel):
     checks: list[VerificationItem]
 
 
+class RAGEvalResult(BaseModel):
+    faithfulness: float | None = None
+    answer_relevancy: float | None = None
+    context_precision: float | None = None
+    context_recall: float | None = None
+
+
+class RAGEvalRequest(BaseModel):
+    question: str
+    answer: str
+    contexts: list[str] = Field(default_factory=list)
+
+    @field_validator("question", "answer")
+    @classmethod
+    def validate_non_empty(cls, value: str) -> str:
+        return validate_question(value)
+
+
 class RAGChatResponse(BaseModel):
     question: str
     answer: str
     citations: list[RAGCitation]
     verification: GuardrailResult | None = None
     warnings: list[str] = Field(default_factory=list)
+<<<<<<< HEAD
+    eval: RAGEvalResult | None = None
+=======
     session_id: str | None = None
     saved_at: str | None = None
 
@@ -272,6 +293,7 @@ class RAGChatSessionListResponse(BaseModel):
 
 class RAGChatSessionResponse(RAGChatSessionSummary):
     messages: list[RAGChatStoredMessage] = Field(default_factory=list)
+>>>>>>> b217404d5777596d29b33f9e5cbae81b9b326d47
 
 
 class LeaseExtraction(BaseModel):
