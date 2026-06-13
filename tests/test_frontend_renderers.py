@@ -10,6 +10,14 @@ class RecordingStreamlit:
     def subheader(self, text: str) -> None:
         self.calls.append(("subheader", text))
 
+    def columns(self, count: int | list[int]):
+        self.calls.append(("columns", count))
+        column_count = count if isinstance(count, int) else len(count)
+        return [nullcontext() for _ in range(column_count)]
+
+    def download_button(self, **kwargs) -> None:
+        self.calls.append(("download_button", kwargs.get("label")))
+
     def markdown(self, text: str) -> None:
         self.calls.append(("markdown", text))
 

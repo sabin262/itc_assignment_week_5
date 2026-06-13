@@ -623,7 +623,8 @@ def _render_rag_citations(citations: list[object]) -> None:
         if not isinstance(citation, dict):
             continue
         source_type = str(citation.get("source_type") or "chunk")
-        st.caption(f"{citation.get('key', '')} ({source_type})")
+        caption = f"{citation.get('key', '')} ({source_type})"
+        st.caption(caption)
         st.write(citation.get("snippet", ""))
 
 

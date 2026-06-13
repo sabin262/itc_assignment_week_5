@@ -39,9 +39,19 @@ from app.schemas import (
 )
 
 
-CHUNK_WORDS = 1024
-CHUNK_OVERLAP_WORDS = 100
+CHUNK_WORDS = 300
+CHUNK_OVERLAP_WORDS = 50
 EMBEDDING_BATCH_SIZE = 32
+SECTION_PREFIX = "Section:"
+COMMON_LEASE_HEADING_PATTERN = re.compile(
+    r"\b("
+    r"agreement|assignment|default|deposit|entry|fees|guests|insurance|"
+    r"landlord|late fee|maintenance|notice|parties|pets|premises|"
+    r"renewal|rent|repairs|rules|security deposit|special conditions|"
+    r"subletting|tenant|term|termination|utilities|vacate"
+    r")\b",
+    re.IGNORECASE,
+)
 
 IndexProgressCallback = Callable[[int, int, str, str | None], None]
 
@@ -73,7 +83,25 @@ class LeaseChunk:
     size: int
     last_modified: str
     indexed_at: str
+    section_heading: str | None = None
+    section_index: int | None = None
+    section_chunk_index: int | None = None
     score: float | None = None
+
+
+@dataclass(frozen=True)
+class LeaseSection:
+    heading: str | None
+    text: str
+    section_index: int
+
+
+@dataclass(frozen=True)
+class SectionedChunkText:
+    text: str
+    section_heading: str | None
+    section_index: int | None
+    section_chunk_index: int | None
 
 
 @dataclass
@@ -86,6 +114,26 @@ class LeaseSummaryRecord:
     indexed_at: str
     summary: SummariseResponse
     monthly_rent_amount_numeric: float | None = None
+
+
+@dataclass(frozen=True)
+class SummaryFieldSpec:
+    field_name: str
+    label: str
+    aliases: tuple[str, ...]
+    is_list: bool = False
+
+
+@dataclass(frozen=True)
+class SummaryComparisonSpec:
+    field: SummaryFieldSpec
+    kind: str
+
+
+@dataclass(frozen=True)
+class SummaryComparisonRequest:
+    spec: SummaryComparisonSpec
+    mode: str
 
 
 class AzureEmbeddingClient:
@@ -844,11 +892,11 @@ class RAGService:
                 self._s3_prefix,
                 validated_lease_keys or None,
             )
-            aggregate = _answer_summary_aggregate_question(question, summaries)
-            if aggregate is not None:
-                return aggregate
+            deterministic = _answer_summary_deterministic_question(question, summaries)
+            if deterministic is not None:
+                return deterministic
             chunks: list[LeaseChunk]
-            if _rent_aggregate_mode(question) is not None:
+            if _summary_comparison_request(question) is not None:
                 chunks = self._reconstructed_chunks_for_chat(validated_lease_keys)
             else:
                 query_embedding = self._embedding_client.embed_texts([question], trace=trace)[0]
@@ -948,21 +996,167 @@ def _chunks_for_file(
     filename = s3_file.filename or PurePosixPath(s3_file.key).name
     last_modified = s3_file.last_modified.isoformat() if s3_file.last_modified else ""
     extension = PurePosixPath(filename).suffix.lower()
-    for index, chunk_text in enumerate(split_text_into_chunks(text)):
+    for index, chunk in enumerate(split_lease_text_into_chunks(text)):
         chunks.append(
             LeaseChunk(
                 key=s3_file.key,
                 filename=filename,
-                text=chunk_text,
+                text=chunk.text,
                 chunk_index=index,
                 s3_prefix=s3_prefix,
                 source_extension=extension,
                 size=s3_file.size,
                 last_modified=last_modified,
                 indexed_at=indexed_at,
+                section_heading=chunk.section_heading,
+                section_index=chunk.section_index,
+                section_chunk_index=chunk.section_chunk_index,
             )
         )
     return chunks
+
+
+def split_lease_text_into_chunks(
+    text: str,
+    chunk_words: int = CHUNK_WORDS,
+    overlap_words: int = CHUNK_OVERLAP_WORDS,
+) -> list[SectionedChunkText]:
+    sections = detect_lease_sections(text)
+    if not sections:
+        return [
+            SectionedChunkText(
+                text=chunk_text,
+                section_heading=None,
+                section_index=None,
+                section_chunk_index=None,
+            )
+            for chunk_text in split_text_into_chunks(text, chunk_words, overlap_words)
+        ]
+
+    chunks: list[SectionedChunkText] = []
+    for section in sections:
+        section_chunks = split_text_into_chunks(
+            section.text,
+            chunk_words,
+            overlap_words,
+        )
+        for section_chunk_index, chunk_text in enumerate(section_chunks):
+            chunks.append(
+                SectionedChunkText(
+                    text=_section_prefixed_text(section.heading, chunk_text),
+                    section_heading=section.heading,
+                    section_index=section.section_index,
+                    section_chunk_index=section_chunk_index,
+                )
+            )
+    return chunks
+
+
+def detect_lease_sections(text: str) -> list[LeaseSection]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return []
+
+    detected_headings = 0
+    pending_heading: str | None = None
+    current_lines: list[str] = []
+    raw_sections: list[tuple[str | None, list[str]]] = []
+
+    for line in lines:
+        heading = _detect_section_heading(line)
+        if heading is not None:
+            if current_lines:
+                raw_sections.append((pending_heading, current_lines))
+            pending_heading = heading
+            current_lines = [line]
+            detected_headings += 1
+            continue
+        current_lines.append(line)
+
+    if current_lines:
+        raw_sections.append((pending_heading, current_lines))
+
+    if detected_headings < 2:
+        return []
+
+    sections: list[LeaseSection] = []
+    for index, (heading, section_lines) in enumerate(raw_sections):
+        section_text = "\n".join(section_lines).strip()
+        if not section_text:
+            continue
+        sections.append(
+            LeaseSection(
+                heading=heading,
+                text=section_text,
+                section_index=index,
+            )
+        )
+    return sections
+
+
+def _detect_section_heading(line: str) -> str | None:
+    candidate = line.strip()
+    if not candidate:
+        return None
+
+    word_count = len(candidate.split())
+    if word_count > 12 or len(candidate) > 120:
+        return None
+
+    cleaned = candidate.strip(":- \t")
+    numbered = re.match(
+        r"^(?:section\s+)?(?P<number>\d+(?:\.\d+)*)(?:[\).:-])?\s+(?P<title>.+)$",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if numbered:
+        title = numbered.group("title").strip(":- \t")
+        if _looks_like_heading_title(title):
+            return title
+
+    if _is_uppercase_heading(cleaned):
+        return cleaned.title()
+
+    if _is_common_lease_heading(cleaned):
+        return cleaned
+
+    return None
+
+
+def _looks_like_heading_title(value: str) -> bool:
+    if not value or len(value.split()) > 10:
+        return False
+    if value.endswith("."):
+        return False
+    first = value[0]
+    return first.isupper() or COMMON_LEASE_HEADING_PATTERN.search(value) is not None
+
+
+def _is_uppercase_heading(value: str) -> bool:
+    letters = [character for character in value if character.isalpha()]
+    if len(letters) < 3:
+        return False
+    if value.endswith("."):
+        return False
+    uppercase_count = sum(1 for character in letters if character.isupper())
+    return uppercase_count / len(letters) >= 0.85
+
+
+def _is_common_lease_heading(value: str) -> bool:
+    if value.endswith("."):
+        return False
+    if len(value.split()) > 8:
+        return False
+    return COMMON_LEASE_HEADING_PATTERN.search(value) is not None
+
+
+def _section_prefixed_text(heading: str | None, text: str) -> str:
+    if not heading:
+        return text
+    prefix = f"{SECTION_PREFIX} {heading}"
+    if text.startswith(prefix):
+        return text
+    return f"{prefix}\n{text}"
 
 
 def split_text_into_chunks(
@@ -1141,6 +1335,7 @@ def _search_match(chunk: LeaseChunk) -> RAGSearchMatch:
         snippet=chunk.text,
         score=chunk.score,
         chunk_index=chunk.chunk_index,
+        section_heading=chunk.section_heading,
     )
 
 
@@ -1157,6 +1352,8 @@ def _citation(chunk: LeaseChunk) -> RAGCitation:
 def _chunk_context_label(chunk: LeaseChunk) -> str:
     if chunk.chunk_index < 0:
         return "reconstructed indexed lease text"
+    if chunk.section_heading:
+        return f"section {chunk.section_heading!r}, chunk {chunk.chunk_index}"
     return f"chunk {chunk.chunk_index}"
 
 
@@ -1255,68 +1452,526 @@ def _summary_record_from_payload(
     )
 
 
-def _answer_summary_aggregate_question(
+TENANT_OBLIGATIONS_FIELD = SummaryFieldSpec(
+    field_name="tenant_obligations",
+    label="tenant obligations",
+    aliases=(
+        "tenant obligation",
+        "tenant obligations",
+        "tenant duty",
+        "tenant duties",
+        "tenant responsibility",
+        "tenant responsibilities",
+        "tenant must",
+    ),
+    is_list=True,
+)
+LANDLORD_OBLIGATIONS_FIELD = SummaryFieldSpec(
+    field_name="landlord_obligations",
+    label="landlord obligations",
+    aliases=(
+        "landlord obligation",
+        "landlord obligations",
+        "landlord duty",
+        "landlord duties",
+        "landlord responsibility",
+        "landlord responsibilities",
+        "landlord must",
+    ),
+    is_list=True,
+)
+UNUSUAL_CLAUSES_FIELD = SummaryFieldSpec(
+    field_name="unusual_clauses",
+    label="unusual clauses",
+    aliases=(
+        "unusual clause",
+        "unusual clauses",
+        "unusual term",
+        "unusual terms",
+        "special clause",
+        "special clauses",
+        "special term",
+        "special terms",
+    ),
+    is_list=True,
+)
+RENT_DUE_FIELD = SummaryFieldSpec(
+    field_name="rent_payment_due_date",
+    label="rent payment due date",
+    aliases=(
+        "rent due",
+        "rent due date",
+        "rent payment due",
+        "rent payment date",
+        "when is rent due",
+        "when rent is due",
+    ),
+)
+MONTHLY_RENT_FIELD = SummaryFieldSpec(
+    field_name="monthly_rent_amount",
+    label="monthly rent",
+    aliases=("monthly rent", "rent amount", "rent", "rental amount", "price", "cost"),
+)
+SECURITY_DEPOSIT_FIELD = SummaryFieldSpec(
+    field_name="security_deposit_amount",
+    label="security deposit",
+    aliases=("security deposit", "deposit"),
+)
+NOTICE_PERIOD_FIELD = SummaryFieldSpec(
+    field_name="notice_period_to_vacate",
+    label="notice period",
+    aliases=(
+        "notice period",
+        "notice to vacate",
+        "notice period to vacate",
+        "vacate notice",
+    ),
+)
+LEASE_START_FIELD = SummaryFieldSpec(
+    field_name="lease_start_date",
+    label="lease start date",
+    aliases=(
+        "lease start",
+        "start date",
+        "lease starts",
+        "starts",
+        "commencement date",
+        "begin date",
+        "begins",
+    ),
+)
+LEASE_END_FIELD = SummaryFieldSpec(
+    field_name="lease_end_date",
+    label="lease end date",
+    aliases=(
+        "lease end",
+        "end date",
+        "lease ends",
+        "ends",
+        "expires",
+        "expiry",
+        "expiration",
+    ),
+)
+TENANT_NAME_FIELD = SummaryFieldSpec(
+    field_name="tenant_name",
+    label="tenant name",
+    aliases=("tenant name", "tenant", "tenants", "renter", "renter name"),
+)
+LANDLORD_NAME_FIELD = SummaryFieldSpec(
+    field_name="landlord_name",
+    label="landlord name",
+    aliases=("landlord name", "landlord", "landlords", "lessor"),
+)
+PROPERTY_ADDRESS_FIELD = SummaryFieldSpec(
+    field_name="property_address",
+    label="property address",
+    aliases=("property address", "address", "property"),
+)
+PLAIN_SUMMARY_FIELD = SummaryFieldSpec(
+    field_name="plain_english_summary",
+    label="plain English summary",
+    aliases=("plain english summary", "summary", "summarize", "summarise", "overview"),
+)
+
+SUMMARY_LOOKUP_FIELDS = (
+    TENANT_OBLIGATIONS_FIELD,
+    LANDLORD_OBLIGATIONS_FIELD,
+    UNUSUAL_CLAUSES_FIELD,
+    RENT_DUE_FIELD,
+    SECURITY_DEPOSIT_FIELD,
+    NOTICE_PERIOD_FIELD,
+    LEASE_START_FIELD,
+    LEASE_END_FIELD,
+    TENANT_NAME_FIELD,
+    LANDLORD_NAME_FIELD,
+    PROPERTY_ADDRESS_FIELD,
+    PLAIN_SUMMARY_FIELD,
+    MONTHLY_RENT_FIELD,
+)
+
+SUMMARY_COMPARISON_FIELDS = (
+    SummaryComparisonSpec(MONTHLY_RENT_FIELD, "money"),
+    SummaryComparisonSpec(SECURITY_DEPOSIT_FIELD, "money"),
+    SummaryComparisonSpec(LEASE_START_FIELD, "date"),
+    SummaryComparisonSpec(LEASE_END_FIELD, "date"),
+)
+
+
+def _answer_summary_deterministic_question(
     question: str,
     summaries: list[LeaseSummaryRecord],
 ) -> RAGChatResponse | None:
-    mode = _rent_aggregate_mode(question)
-    if mode is None:
+    if not summaries:
         return None
 
-    candidates = [
+    comparison = _summary_comparison_request(question)
+    if comparison is not None:
+        return _answer_summary_comparison_question(question, summaries, comparison)
+
+    lookup = _summary_lookup_field(question)
+    if lookup is not None:
+        return _answer_summary_lookup_question(question, summaries, lookup)
+
+    return None
+
+
+def _answer_summary_comparison_question(
+    question: str,
+    summaries: list[LeaseSummaryRecord],
+    request: SummaryComparisonRequest,
+) -> RAGChatResponse:
+    field = request.spec.field
+    candidates: list[tuple[LeaseSummaryRecord, str, Any]] = []
+    missing = [
         summary
         for summary in summaries
-        if summary.monthly_rent_amount_numeric is not None
-    ]
-    missing = [
-        summary.filename or summary.key
-        for summary in summaries
-        if summary.monthly_rent_amount_numeric is None
+        if not _summary_has_parseable_comparison_value(summary, request.spec)
     ]
 
-    if not summaries or not candidates:
-        return None
+    for summary in summaries:
+        raw_value = _summary_field_value(summary, field)
+        normalized = _normalised_comparison_value(summary, request.spec)
+        if normalized is None:
+            continue
+        candidates.append((summary, _format_summary_value(raw_value), normalized))
 
-    selected = min(candidates, key=lambda item: item.monthly_rent_amount_numeric)
-    adjective = "cheapest"
-    if mode == "highest":
-        selected = max(candidates, key=lambda item: item.monthly_rent_amount_numeric)
-        adjective = "highest"
+    if not candidates:
+        answer = (
+            f"I could not compare {field.label} because no indexed lease summaries "
+            f"had a parseable {field.label}."
+        )
+        if missing:
+            answer += " Missing or unparseable values: "
+            answer += ", ".join(_summary_location(summary) for summary in missing) + "."
+        return RAGChatResponse(
+            question=question,
+            answer=answer,
+            citations=[_summary_citation(summary) for summary in summaries],
+            verification=_supported_chat_verification(answer, field.label),
+            warnings=[],
+        )
 
-    rent_text = selected.summary.extraction.monthly_rent_amount or "the extracted rent"
+    selected = min(candidates, key=lambda item: item[2])
+    if request.mode in {"highest", "latest"}:
+        selected = max(candidates, key=lambda item: item[2])
+
+    selected_summary, selected_value, _ = selected
+    adjective = _comparison_adjective(field, request.mode)
     answer = (
-        f"The {adjective} monthly rent I found is {rent_text} in "
-        f"{selected.filename} ({selected.key}). I compared "
-        f"{len(candidates)} indexed lease summaries with parseable monthly rent."
+        f"The {adjective} {field.label} I found is {selected_value} in "
+        f"{selected_summary.filename} ({selected_summary.key}). I compared "
+        f"{len(candidates)} indexed lease summaries with parseable {field.label}."
     )
     if missing:
-        answer += " I could not include these leases because their monthly rent was missing or unparseable: "
-        answer += ", ".join(missing) + "."
+        answer += (
+            " I could not include these leases because their "
+            f"{field.label} was missing or unparseable: "
+        )
+        answer += ", ".join(_summary_location(summary) for summary in missing) + "."
 
     return RAGChatResponse(
         question=question,
         answer=answer,
-        citations=[_summary_citation(selected)],
-        verification=_supported_chat_verification(answer, rent_text),
+        citations=[_summary_citation(selected_summary)],
+        verification=_supported_chat_verification(answer, selected_value),
         warnings=[],
     )
 
 
-def _rent_aggregate_mode(question: str) -> str | None:
+def _answer_summary_lookup_question(
+    question: str,
+    summaries: list[LeaseSummaryRecord],
+    field: SummaryFieldSpec,
+) -> RAGChatResponse:
     cleaned = question.lower()
-    rent_terms = {"rent", "rental", "lease", "leases", "price", "cost"}
-    if not any(term in cleaned for term in rent_terms):
+    values: list[tuple[LeaseSummaryRecord, str]] = []
+    missing: list[LeaseSummaryRecord] = []
+
+    for summary in summaries:
+        raw_value = _summary_field_value(summary, field)
+        if _summary_has_value(raw_value):
+            values.append((summary, _format_summary_value(raw_value)))
+        else:
+            missing.append(summary)
+
+    if _is_missing_lookup(cleaned):
+        if missing:
+            answer = (
+                f"The indexed lease summaries missing {field.label} are: "
+                f"{', '.join(_summary_location(summary) for summary in missing)}."
+            )
+            citations = [
+                _summary_value_citation(summary, field, None)
+                for summary in missing
+            ]
+            evidence = ", ".join(_summary_location(summary) for summary in missing)
+        else:
+            answer = (
+                f"All {len(summaries)} indexed lease summaries include "
+                f"{field.label}."
+            )
+            citations = [_summary_citation(summary) for summary in summaries]
+            evidence = field.label
+        return RAGChatResponse(
+            question=question,
+            answer=answer,
+            citations=citations,
+            verification=_supported_chat_verification(answer, evidence),
+            warnings=[],
+        )
+
+    if not values:
+        answer = f"I could not find {field.label} in the indexed lease summaries."
+        if missing:
+            answer += " Missing values: "
+            answer += ", ".join(_summary_location(summary) for summary in missing) + "."
+        return RAGChatResponse(
+            question=question,
+            answer=answer,
+            citations=[_summary_value_citation(summary, field, None) for summary in missing],
+            verification=_supported_chat_verification(answer, field.label),
+            warnings=[],
+        )
+
+    if len(values) == 1:
+        summary, value = values[0]
+        answer = (
+            f"The {field.label} for {_summary_display_name(summary)} "
+            f"{_summary_lookup_verb(field)} "
+            f"{value}."
+        )
+    else:
+        answer = (
+            f"The {_pluralize_label(field.label)} for the leases are:\n\n"
+            + "\n".join(
+                f"- {_summary_lookup_prefix(summary, field)}: {value}"
+                for summary, value in values
+            )
+        )
+
+    if missing:
+        answer += (
+            f" I could not find {field.label} in: "
+            + ", ".join(_summary_location(summary) for summary in missing)
+            + "."
+        )
+
+    return RAGChatResponse(
+        question=question,
+        answer=answer,
+        citations=[
+            _summary_value_citation(summary, field, value)
+            for summary, value in values
+        ],
+        verification=_supported_chat_verification(
+            answer,
+            "; ".join(value for _, value in values),
+        ),
+        warnings=[],
+    )
+
+
+def _summary_lookup_field(question: str) -> SummaryFieldSpec | None:
+    cleaned = question.lower()
+    for field in SUMMARY_LOOKUP_FIELDS:
+        if _summary_field_matches(cleaned, field):
+            return field
+    return None
+
+
+def _summary_comparison_request(question: str) -> SummaryComparisonRequest | None:
+    cleaned = question.lower()
+    for spec in SUMMARY_COMPARISON_FIELDS:
+        if not _summary_field_matches(cleaned, spec.field):
+            continue
+        mode = _comparison_mode(cleaned, spec.kind)
+        if mode is not None:
+            return SummaryComparisonRequest(spec=spec, mode=mode)
+    return None
+
+
+def _summary_field_matches(cleaned_question: str, field: SummaryFieldSpec) -> bool:
+    return any(alias in cleaned_question for alias in field.aliases)
+
+
+def _comparison_mode(cleaned_question: str, kind: str) -> str | None:
+    if kind == "date":
+        if _contains_any(cleaned_question, ("earliest", "first", "soonest")):
+            return "earliest"
+        if _contains_any(cleaned_question, ("latest", "last")):
+            return "latest"
         return None
-    if any(
-        term in cleaned
-        for term in ("cheapest", "lowest", "least expensive", "minimum", "min ")
+
+    if _contains_any(
+        cleaned_question,
+        ("cheapest", "lowest", "least expensive", "minimum", "min ", "smallest"),
     ):
         return "lowest"
-    if any(
-        term in cleaned
-        for term in ("highest", "most expensive", "maximum", "max ")
+    if _contains_any(
+        cleaned_question,
+        ("highest", "most expensive", "maximum", "max ", "largest", "biggest"),
     ):
         return "highest"
+    return None
+
+
+def _contains_any(value: str, terms: tuple[str, ...]) -> bool:
+    return any(term in value for term in terms)
+
+
+def _is_missing_lookup(cleaned_question: str) -> bool:
+    padded = f" {cleaned_question} "
+    return any(
+        term in padded
+        for term in (
+            " missing ",
+            " not listed ",
+            " not provided ",
+            " not available ",
+            " no ",
+            " without ",
+        )
+    )
+
+
+def _summary_field_value(
+    summary: LeaseSummaryRecord,
+    field: SummaryFieldSpec,
+) -> str | list[str] | None:
+    return getattr(summary.summary.extraction, field.field_name)
+
+
+def _summary_has_value(value: str | list[str] | None) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, list):
+        return any(str(item).strip() for item in value)
+    return bool(str(value).strip())
+
+
+def _summary_has_parseable_comparison_value(
+    summary: LeaseSummaryRecord,
+    spec: SummaryComparisonSpec,
+) -> bool:
+    return _normalised_comparison_value(summary, spec) is not None
+
+
+def _normalised_comparison_value(
+    summary: LeaseSummaryRecord,
+    spec: SummaryComparisonSpec,
+) -> Any | None:
+    raw_value = _summary_field_value(summary, spec.field)
+    if spec.field.field_name == "monthly_rent_amount":
+        return summary.monthly_rent_amount_numeric or _normalise_money_amount(
+            _format_summary_value(raw_value)
+        )
+    if spec.kind == "money":
+        return _normalise_money_amount(_format_summary_value(raw_value))
+    if spec.kind == "date":
+        return _normalise_date_value(_format_summary_value(raw_value))
+    return None
+
+
+def _comparison_adjective(field: SummaryFieldSpec, mode: str) -> str:
+    if field.field_name == "monthly_rent_amount" and mode == "lowest":
+        return "cheapest"
+    return mode
+
+
+def _summary_location(summary: LeaseSummaryRecord) -> str:
+    return f"{summary.filename} ({summary.key})"
+
+
+def _summary_display_name(summary: LeaseSummaryRecord) -> str:
+    stem = PurePosixPath(summary.filename or summary.key).stem
+    cleaned = re.sub(r"[_-]+", " ", stem).strip()
+    if not cleaned:
+        cleaned = summary.filename or summary.key
+    if "lease" not in cleaned.lower():
+        cleaned = f"{cleaned} lease"
+    return cleaned
+
+
+def _summary_lookup_prefix(
+    summary: LeaseSummaryRecord,
+    field: SummaryFieldSpec,
+) -> str:
+    if field.field_name != "property_address":
+        address = summary.summary.extraction.property_address
+        if address:
+            return f"For {address}"
+    return _summary_display_name(summary)
+
+
+def _pluralize_label(label: str) -> str:
+    irregular = {
+        "property address": "property addresses",
+        "plain English summary": "plain English summaries",
+    }
+    if label in irregular:
+        return irregular[label]
+    if label.endswith("y"):
+        return f"{label[:-1]}ies"
+    if label.endswith("s"):
+        return label
+    return f"{label}s"
+
+
+def _summary_lookup_verb(field: SummaryFieldSpec) -> str:
+    return "are" if field.is_list or field.label.endswith("s") else "is"
+
+
+def _format_summary_value(value: str | list[str] | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return "; ".join(str(item).strip() for item in value if str(item).strip())
+    return str(value).strip()
+
+
+def _summary_value_citation(
+    summary: LeaseSummaryRecord,
+    field: SummaryFieldSpec,
+    value: str | None,
+) -> RAGCitation:
+    snippet_value = value if value else "missing"
+    return RAGCitation(
+        key=summary.key,
+        filename=summary.filename,
+        snippet=f"{field.label}: {snippet_value}",
+        chunk_index=-1,
+        source_type="summary",
+    )
+
+
+def _normalise_date_value(value: str | None) -> Any | None:
+    if not value:
+        return None
+
+    cleaned = re.sub(
+        r"\b(\d{1,2})(st|nd|rd|th)\b",
+        r"\1",
+        value.strip(),
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    formats = (
+        "%d %B %Y",
+        "%d %b %Y",
+        "%B %d %Y",
+        "%B %d, %Y",
+        "%b %d %Y",
+        "%b %d, %Y",
+        "%Y-%m-%d",
+        "%d/%m/%Y",
+        "%m/%d/%Y",
+    )
+    for date_format in formats:
+        try:
+            return datetime.strptime(cleaned, date_format).date()
+        except ValueError:
+            continue
     return None
 
 
@@ -1377,10 +2032,26 @@ def _optional_float(value: Any) -> float | None:
         return None
 
 
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _merge_indexed_chunks(chunks: list[LeaseChunk]) -> str:
     merged_words: list[str] = []
     for chunk in sorted(chunks, key=lambda item: item.chunk_index):
-        chunk_words = chunk.text.split()
+        chunk_words = _chunk_text_for_reconstruction(chunk).split()
         if not merged_words:
             merged_words.extend(chunk_words)
             continue
@@ -1411,10 +2082,28 @@ def _merge_chunks_by_lease(chunks: list[LeaseChunk]) -> list[LeaseChunk]:
                 size=first_chunk.size,
                 last_modified=first_chunk.last_modified,
                 indexed_at=first_chunk.indexed_at,
+                section_heading=first_chunk.section_heading,
+                section_index=first_chunk.section_index,
+                section_chunk_index=-1,
                 score=None,
             )
         )
     return merged_chunks
+
+
+def _chunk_text_for_reconstruction(chunk: LeaseChunk) -> str:
+    return _strip_section_prefix(chunk.text, chunk.section_heading)
+
+
+def _strip_section_prefix(text: str, heading: str | None) -> str:
+    if not heading:
+        return text
+    prefix = f"{SECTION_PREFIX} {heading}"
+    if text == prefix:
+        return ""
+    if text.startswith(f"{prefix}\n"):
+        return text[len(prefix) + 1 :]
+    return text
 
 
 def _append_without_overlap(
@@ -1434,7 +2123,7 @@ def _append_without_overlap(
 
 
 def _chunk_metadata(chunk: LeaseChunk) -> dict[str, Any]:
-    return {
+    metadata: dict[str, Any] = {
         "s3_key": chunk.key,
         "filename": chunk.filename,
         "chunk_index": chunk.chunk_index,
@@ -1444,6 +2133,13 @@ def _chunk_metadata(chunk: LeaseChunk) -> dict[str, Any]:
         "last_modified": chunk.last_modified,
         "indexed_at": chunk.indexed_at,
     }
+    if chunk.section_heading is not None:
+        metadata["section_heading"] = chunk.section_heading
+    if chunk.section_index is not None:
+        metadata["section_index"] = chunk.section_index
+    if chunk.section_chunk_index is not None:
+        metadata["section_chunk_index"] = chunk.section_chunk_index
+    return metadata
 
 
 def _chunk_from_result(
@@ -1462,6 +2158,9 @@ def _chunk_from_result(
         size=int(metadata.get("size", 0)),
         last_modified=str(metadata.get("last_modified", "")),
         indexed_at=str(metadata.get("indexed_at", "")),
+        section_heading=_optional_string(metadata.get("section_heading")),
+        section_index=_optional_int(metadata.get("section_index")),
+        section_chunk_index=_optional_int(metadata.get("section_chunk_index")),
         score=score,
     )
 

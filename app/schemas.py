@@ -156,6 +156,7 @@ class RAGSearchMatch(BaseModel):
     snippet: str
     score: float | None = None
     chunk_index: int
+    section_heading: str | None = None
 
 
 class RAGSearchResponse(BaseModel):

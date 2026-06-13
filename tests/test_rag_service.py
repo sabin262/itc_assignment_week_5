@@ -5,6 +5,7 @@ import pytest
 from app.config import Settings
 from app.rag_service import (
     AzureEmbeddingClient,
+    CHUNK_OVERLAP_WORDS,
     CHUNK_WORDS,
     LeaseChunk,
     LeaseSummaryRecord,
@@ -15,7 +16,10 @@ from app.rag_service import (
     RAGService,
     _build_chat_guardrail_messages,
     _build_chat_messages,
+    _chunk_metadata,
     split_text_into_chunks,
+    split_lease_text_into_chunks,
+    detect_lease_sections,
 )
 from app.schemas import (
     GuardrailResult,
@@ -289,7 +293,14 @@ def summary_response(rent: str | None = "1,500 pounds") -> SummariseResponse:
     )
 
 
-def chunk(key: str, text: str, index: int) -> LeaseChunk:
+def chunk(
+    key: str,
+    text: str,
+    index: int,
+    section_heading: str | None = None,
+    section_index: int | None = None,
+    section_chunk_index: int | None = None,
+) -> LeaseChunk:
     return LeaseChunk(
         key=key,
         filename=key.rsplit("/", 1)[-1],
@@ -300,6 +311,9 @@ def chunk(key: str, text: str, index: int) -> LeaseChunk:
         size=100,
         last_modified="",
         indexed_at="",
+        section_heading=section_heading,
+        section_index=section_index,
+        section_chunk_index=section_chunk_index,
     )
 
 
@@ -318,6 +332,18 @@ def summary_record(
         summary=summary_response(rent),
         monthly_rent_amount_numeric=numeric_rent,
     )
+
+
+def custom_summary_record(
+    key: str,
+    rent: str | None = "1,500 pounds",
+    numeric_rent: float | None = 1500,
+    **fields,
+) -> LeaseSummaryRecord:
+    record = summary_record(key, rent, numeric_rent)
+    for field_name, value in fields.items():
+        setattr(record.summary.extraction, field_name, value)
+    return record
 
 
 def make_service(
@@ -343,6 +369,113 @@ def test_split_text_into_overlapping_chunks():
     )
 
     assert chunks == ["0 1 2 3", "3 4 5 6", "6 7 8 9"]
+
+
+def test_detect_lease_sections_from_numbered_and_uppercase_headings():
+    sections = detect_lease_sections(
+        "\n".join(
+            [
+                "RESIDENTIAL LEASE AGREEMENT",
+                "This lease is made between the parties.",
+                "1. Rent",
+                "Tenant must pay rent monthly.",
+                "SECURITY DEPOSIT",
+                "Tenant must pay a deposit.",
+            ]
+        )
+    )
+
+    assert [section.heading for section in sections] == [
+        "Residential Lease Agreement",
+        "Rent",
+        "Security Deposit",
+    ]
+    assert sections[1].text.startswith("1. Rent")
+    assert "Tenant must pay rent monthly." in sections[1].text
+
+
+def test_detect_lease_sections_returns_empty_for_no_reliable_headings():
+    sections = detect_lease_sections(
+        "This lease is made between two parties.\n"
+        "The tenant pays rent every month.\n"
+        "The landlord makes repairs."
+    )
+
+    assert sections == []
+
+
+def test_split_lease_text_into_chunks_keeps_short_sections_with_heading_prefix():
+    chunks = split_lease_text_into_chunks(
+        "\n".join(
+            [
+                "1. Rent",
+                "Tenant must pay rent monthly.",
+                "2. Repairs",
+                "Landlord must make repairs.",
+            ]
+        ),
+        chunk_words=20,
+        overlap_words=2,
+    )
+
+    assert len(chunks) == 2
+    assert chunks[0].section_heading == "Rent"
+    assert chunks[0].section_index == 0
+    assert chunks[0].section_chunk_index == 0
+    assert chunks[0].text.startswith("Section: Rent\n1. Rent")
+    assert chunks[1].section_heading == "Repairs"
+
+
+def test_split_lease_text_into_chunks_splits_long_sections_with_overlap():
+    long_rent_section = " ".join(f"rent{index}" for index in range(12))
+    chunks = split_lease_text_into_chunks(
+        "\n".join(
+            [
+                "1. Rent",
+                long_rent_section,
+                "2. Repairs",
+                "Landlord repairs the property.",
+            ]
+        ),
+        chunk_words=6,
+        overlap_words=2,
+    )
+
+    rent_chunks = [chunk for chunk in chunks if chunk.section_heading == "Rent"]
+
+    assert len(rent_chunks) > 1
+    assert rent_chunks[0].section_chunk_index == 0
+    assert rent_chunks[1].section_chunk_index == 1
+    assert all(chunk.text.startswith("Section: Rent\n") for chunk in rent_chunks)
+    assert "rent2 rent3" in rent_chunks[1].text
+
+
+def test_split_lease_text_into_chunks_falls_back_to_fixed_chunks_without_headings():
+    chunks = split_lease_text_into_chunks(
+        " ".join(str(index) for index in range(10)),
+        chunk_words=4,
+        overlap_words=1,
+    )
+
+    assert [chunk.text for chunk in chunks] == ["0 1 2 3", "3 4 5 6", "6 7 8 9"]
+    assert all(chunk.section_heading is None for chunk in chunks)
+
+
+def test_chunk_metadata_includes_section_fields_when_present():
+    metadata = _chunk_metadata(
+        chunk(
+            "sample_leases/lease_a.txt",
+            "Section: Rent\n1. Rent Tenant pays monthly.",
+            0,
+            section_heading="Rent",
+            section_index=1,
+            section_chunk_index=0,
+        )
+    )
+
+    assert metadata["section_heading"] == "Rent"
+    assert metadata["section_index"] == 1
+    assert metadata["section_chunk_index"] == 0
 
 
 def test_indexing_downloads_s3_leases_chunks_embeds_and_upserts():
@@ -485,6 +618,9 @@ def test_search_returns_matching_lease_snippets():
             size=100,
             last_modified="",
             indexed_at="",
+            section_heading="Rent",
+            section_index=1,
+            section_chunk_index=0,
             score=0.82,
         )
     ]
@@ -497,6 +633,7 @@ def test_search_returns_matching_lease_snippets():
     ]
     assert response.matches[0].key == "sample_leases/lease_a.txt"
     assert response.matches[0].snippet == "Monthly rent is 1,500 pounds."
+    assert response.matches[0].section_heading == "Rent"
 
 
 def test_chat_answers_cheapest_rent_from_summaries_without_vector_query():
@@ -579,6 +716,291 @@ def test_chat_cheapest_rent_discloses_unparseable_summary_values():
 
     assert "1,250 pounds" in response.answer
     assert "lease_b.txt" in response.answer
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("Who is the landlord?", "Morgan Properties"),
+        ("What is the property address?", "12 Garden Street"),
+        ("When is rent due?", "first day of each month"),
+        ("What is the security deposit?", "1,500 pounds"),
+        ("What is the notice period?", "two months"),
+        ("What are the tenant obligations?", "Keep the home clean."),
+        ("What are the landlord obligations?", "Make repairs."),
+        ("What are the unusual clauses?", "Pets require written consent."),
+        ("What is the plain English summary?", "Alex rents the property for one year."),
+    ],
+)
+def test_chat_answers_exact_summary_lookups_without_vector_or_llm(question, expected):
+    vector_store = FakeVectorStore()
+    embedding_client = FakeEmbeddingClient()
+    embedding_client.fail_on_call = True
+    chat_client = FakeChatClient()
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record(
+            "sample_leases/lease_a.txt",
+            unusual_clauses=["Pets require written consent."],
+        )
+    ]
+    service = make_service(
+        vector_store=vector_store,
+        embedding_client=embedding_client,
+        chat_client=chat_client,
+        summary_store=summary_store,
+    )
+
+    response = service.chat(
+        question=question,
+        lease_keys=["sample_leases/lease_a.txt"],
+        history=[],
+        top_k=5,
+    )
+
+    assert expected in response.answer
+    assert response.citations[0].source_type == "summary"
+    assert response.citations[0].chunk_index == -1
+    assert vector_store.queries == []
+    assert chat_client.calls == []
+
+
+def test_chat_exact_summary_lookup_respects_selected_lease_filter():
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record("sample_leases/lease_a.txt", tenant_name="Alex Rivera"),
+        custom_summary_record("sample_leases/lease_b.txt", tenant_name="Bailey Chen"),
+    ]
+    embedding_client = FakeEmbeddingClient()
+    embedding_client.fail_on_call = True
+    chat_client = FakeChatClient()
+    service = make_service(
+        embedding_client=embedding_client,
+        chat_client=chat_client,
+        summary_store=summary_store,
+    )
+
+    response = service.chat(
+        question="Who is the tenant?",
+        lease_keys=["sample_leases/lease_b.txt"],
+        history=[],
+        top_k=5,
+    )
+
+    assert "Bailey Chen" in response.answer
+    assert "Alex Rivera" not in response.answer
+    assert chat_client.calls == []
+
+
+def test_chat_lists_all_tenants_from_indexed_summaries():
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record("sample_leases/lease_a.txt", tenant_name="Alex Rivera"),
+        custom_summary_record("sample_leases/lease_b.txt", tenant_name="Bailey Chen"),
+        custom_summary_record("sample_leases/lease_c.txt", tenant_name=None),
+    ]
+    embedding_client = FakeEmbeddingClient()
+    embedding_client.fail_on_call = True
+    service = make_service(
+        embedding_client=embedding_client,
+        chat_client=FakeChatClient(),
+        summary_store=summary_store,
+    )
+
+    response = service.chat(
+        question="List all tenants.",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+
+    assert "Alex Rivera" in response.answer
+    assert "Bailey Chen" in response.answer
+    assert "- For 12 Garden Street: Alex Rivera" in response.answer
+    assert "lease_c.txt" in response.answer
+    assert len(response.citations) == 2
+
+
+def test_chat_formats_multi_lease_tenants_by_property_address():
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record(
+            "sample_leases/riverside_lofts.txt",
+            tenant_name="Amelia Chen and Noah Brooks",
+            property_address="Unit 1206, Riverside Lofts, 42 Merchant Walk, Leeds LS1 4PD",
+        ),
+        custom_summary_record(
+            "sample_leases/rowan_mews_lease.txt",
+            tenant_name="Priya Shah and Daniel Morgan",
+            property_address="19 Rowan Mews, Cambridge CB4 1ZX",
+        ),
+    ]
+    embedding_client = FakeEmbeddingClient()
+    embedding_client.fail_on_call = True
+    service = make_service(
+        embedding_client=embedding_client,
+        chat_client=FakeChatClient(),
+        summary_store=summary_store,
+    )
+
+    response = service.chat(
+        question="Who are the tenants?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+
+    assert response.answer == (
+        "The tenant names for the leases are:\n\n"
+        "- For Unit 1206, Riverside Lofts, 42 Merchant Walk, Leeds LS1 4PD: "
+        "Amelia Chen and Noah Brooks\n"
+        "- For 19 Rowan Mews, Cambridge CB4 1ZX: Priya Shah and Daniel Morgan"
+    )
+
+
+def test_chat_formats_multi_lease_property_addresses_as_structured_lines():
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record(
+            "sample_leases/rowan_mews_lease.txt",
+            property_address="19 Rowan Mews, Cambridge CB4 1ZX",
+        ),
+        custom_summary_record(
+            "sample_leases/ashbourne_court_lease.txt",
+            property_address="Maisonette 8, Ashbourne Court, 3 Belvedere Crescent, Bath BA1 5QY",
+        ),
+    ]
+    embedding_client = FakeEmbeddingClient()
+    embedding_client.fail_on_call = True
+    service = make_service(
+        embedding_client=embedding_client,
+        chat_client=FakeChatClient(),
+        summary_store=summary_store,
+    )
+
+    response = service.chat(
+        question="What are the property addresses?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+
+    assert response.answer == (
+        "The property addresses for the leases are:\n\n"
+        "- rowan mews lease: 19 Rowan Mews, Cambridge CB4 1ZX\n"
+        "- ashbourne court lease: Maisonette 8, Ashbourne Court, "
+        "3 Belvedere Crescent, Bath BA1 5QY"
+    )
+    assert len(response.citations) == 2
+
+
+def test_chat_lists_leases_with_unusual_clauses_from_summaries():
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record(
+            "sample_leases/lease_a.txt",
+            unusual_clauses=["Pets require written consent."],
+        ),
+        custom_summary_record("sample_leases/lease_b.txt", unusual_clauses=None),
+    ]
+    embedding_client = FakeEmbeddingClient()
+    embedding_client.fail_on_call = True
+    service = make_service(
+        embedding_client=embedding_client,
+        chat_client=FakeChatClient(),
+        summary_store=summary_store,
+    )
+
+    response = service.chat(
+        question="Which leases have unusual clauses?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+
+    assert "Pets require written consent." in response.answer
+    assert "lease a" in response.answer
+    assert "lease_b.txt" in response.answer
+    assert response.citations[0].source_type == "summary"
+
+
+def test_chat_compares_deposit_and_dates_from_summaries_without_vector_or_llm():
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record(
+            "sample_leases/lease_a.txt",
+            security_deposit_amount="1,000 pounds",
+            lease_start_date="1 February 2026",
+            lease_end_date="31 December 2026",
+        ),
+        custom_summary_record(
+            "sample_leases/lease_b.txt",
+            security_deposit_amount="2,000 pounds",
+            lease_start_date="1 January 2026",
+            lease_end_date="31 January 2027",
+        ),
+    ]
+    embedding_client = FakeEmbeddingClient()
+    embedding_client.fail_on_call = True
+    chat_client = FakeChatClient()
+    service = make_service(
+        embedding_client=embedding_client,
+        chat_client=chat_client,
+        summary_store=summary_store,
+    )
+
+    highest_deposit = service.chat(
+        question="Which lease has the highest security deposit?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+    earliest_start = service.chat(
+        question="Which lease starts earliest?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+    latest_end = service.chat(
+        question="Which lease has the latest end date?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+
+    assert "2,000 pounds" in highest_deposit.answer
+    assert "lease_b.txt" in highest_deposit.answer
+    assert "1 January 2026" in earliest_start.answer
+    assert "lease_b.txt" in earliest_start.answer
+    assert "31 January 2027" in latest_end.answer
+    assert "lease_b.txt" in latest_end.answer
+    assert chat_client.calls == []
+
+
+def test_chat_comparison_discloses_missing_or_unparseable_summary_values():
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record(
+            "sample_leases/lease_a.txt",
+            security_deposit_amount="1,000 pounds",
+        ),
+        custom_summary_record(
+            "sample_leases/lease_b.txt",
+            security_deposit_amount="not stated",
+        ),
+    ]
+    service = make_service(summary_store=summary_store)
+
+    response = service.chat(
+        question="Which lease has the lowest security deposit?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+
+    assert "1,000 pounds" in response.answer
+    assert "lease_b.txt" in response.answer
+    assert "missing or unparseable" in response.answer
 
 
 def test_chat_cheapest_rent_falls_back_to_selected_indexed_chunks_without_summaries():
@@ -669,7 +1091,7 @@ def test_lease_text_from_index_rebuilds_overlapping_chunks_in_order():
     vector_store = FakeVectorStore()
     expected_words = [f"w{index}" for index in range(500)]
     first_chunk = " ".join(expected_words[:400])
-    second_chunk = " ".join(expected_words[320:])
+    second_chunk = " ".join(expected_words[400 - CHUNK_OVERLAP_WORDS :])
     vector_store.chunks_by_key["sample_leases/lease_a.txt"] = [
         chunk("sample_leases/lease_a.txt", second_chunk, 1),
         chunk("sample_leases/lease_a.txt", first_chunk, 0),
@@ -678,6 +1100,39 @@ def test_lease_text_from_index_rebuilds_overlapping_chunks_in_order():
 
     text = service.lease_text_from_index("sample_leases/lease_a.txt")
 
+    assert text.split() == expected_words
+
+
+def test_lease_text_from_index_strips_section_prefixes_before_reconstruction():
+    vector_store = FakeVectorStore()
+    expected_words = [f"rent{index}" for index in range(120)]
+    first_chunk = "Section: Rent\n" + " ".join(expected_words[:80])
+    second_chunk = "Section: Rent\n" + " ".join(
+        expected_words[80 - CHUNK_OVERLAP_WORDS :]
+    )
+    vector_store.chunks_by_key["sample_leases/lease_a.txt"] = [
+        chunk(
+            "sample_leases/lease_a.txt",
+            second_chunk,
+            1,
+            section_heading="Rent",
+            section_index=0,
+            section_chunk_index=1,
+        ),
+        chunk(
+            "sample_leases/lease_a.txt",
+            first_chunk,
+            0,
+            section_heading="Rent",
+            section_index=0,
+            section_chunk_index=0,
+        ),
+    ]
+    service = make_service(vector_store=vector_store)
+
+    text = service.lease_text_from_index("sample_leases/lease_a.txt")
+
+    assert "Section:" not in text
     assert text.split() == expected_words
 
 
