@@ -262,9 +262,7 @@ class RAGChatResponse(BaseModel):
     citations: list[RAGCitation]
     verification: GuardrailResult | None = None
     warnings: list[str] = Field(default_factory=list)
-<<<<<<< HEAD
     eval: RAGEvalResult | None = None
-=======
     session_id: str | None = None
     saved_at: str | None = None
 
@@ -293,7 +291,6 @@ class RAGChatSessionListResponse(BaseModel):
 
 class RAGChatSessionResponse(RAGChatSessionSummary):
     messages: list[RAGChatStoredMessage] = Field(default_factory=list)
->>>>>>> b217404d5777596d29b33f9e5cbae81b9b326d47
 
 
 class LeaseExtraction(BaseModel):

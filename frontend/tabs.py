@@ -417,6 +417,7 @@ def render_s3_chat_tab() -> None:
                 history.append(assistant_message)
                 response_placeholder.markdown(str(assistant_message["content"]))
                 _render_rag_chat_warnings(assistant_message)
+                _render_ragas_scores(assistant_message.get("eval"))
                 if show_sources:
                     _render_rag_citations(assistant_message.get("citations") or [])
 
@@ -532,36 +533,14 @@ def _assistant_message_from_response(response: dict[str, object]) -> dict[str, o
         assistant_message["warnings"] = response.get("warnings") or []
     if response.get("saved_at"):
         assistant_message["created_at"] = response.get("saved_at")
+    if response.get("eval") is not None:
+        assistant_message["eval"] = response.get("eval")
     return assistant_message
 
 
-<<<<<<< HEAD
-            if response is None:
-                response_placeholder.empty()
-                return
-
-            assistant_message = {
-                "role": "assistant",
-                "content": response.get("answer", ""),
-                "citations": response.get("citations") or [],
-            }
-            if response.get("verification") is not None:
-                assistant_message["verification"] = response.get("verification")
-            if response.get("warnings"):
-                assistant_message["warnings"] = response.get("warnings") or []
-            if response.get("eval") is not None:
-                assistant_message["eval"] = response.get("eval")
-            history.append(assistant_message)
-            response_placeholder.markdown(str(assistant_message["content"]))
-            _render_rag_chat_warnings(assistant_message)
-            _render_ragas_scores(assistant_message.get("eval"))
-            if show_sources:
-                _render_rag_citations(assistant_message.get("citations") or [])
-=======
 def _rerun_if_available() -> None:
     if hasattr(st, "rerun"):
         st.rerun()
->>>>>>> b217404d5777596d29b33f9e5cbae81b9b326d47
 
 
 def _load_s3_leases() -> list[S3LeaseOption] | None:

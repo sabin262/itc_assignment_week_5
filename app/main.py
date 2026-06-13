@@ -30,13 +30,10 @@ from app.schemas import (
     LeaseTextRequest,
     RAGChatRequest,
     RAGChatResponse,
-<<<<<<< HEAD
-    RAGEvalRequest,
-    RAGEvalResult,
-=======
     RAGChatSessionListResponse,
     RAGChatSessionResponse,
->>>>>>> b217404d5777596d29b33f9e5cbae81b9b326d47
+    RAGEvalRequest,
+    RAGEvalResult,
     RAGIndexJobStatus,
     RAGIndexResponse,
     RAGSearchRequest,

@@ -78,19 +78,11 @@ def test_s3_page_renders_only_s3_tabs(monkeypatch):
     )
     monkeypatch.setattr(
         streamlit_app,
-<<<<<<< HEAD
-=======
         "render_upload_index_tab",
         lambda: rendered.append("upload_index"),
     )
     monkeypatch.setattr(
         streamlit_app,
-        "render_s3_search_tab",
-        lambda: rendered.append("s3_search"),
-    )
-    monkeypatch.setattr(
-        streamlit_app,
->>>>>>> b217404d5777596d29b33f9e5cbae81b9b326d47
         "render_s3_chat_tab",
         lambda: rendered.append("s3_chat"),
     )
@@ -99,20 +91,12 @@ def test_s3_page_renders_only_s3_tabs(monkeypatch):
 
     assert (
         "tabs",
-<<<<<<< HEAD
         ["Summarise", "Compare", "Index", "Upload & Index", "Chat"],
-=======
-        ["Summarise", "Compare", "Index", "Upload & Index", "Search", "Chat"],
->>>>>>> b217404d5777596d29b33f9e5cbae81b9b326d47
     ) in fake_st.calls
     assert rendered == [
         "s3_summarise",
         "s3_compare",
         "s3_index",
-<<<<<<< HEAD
-=======
         "upload_index",
-        "s3_search",
->>>>>>> b217404d5777596d29b33f9e5cbae81b9b326d47
         "s3_chat",
     ]
