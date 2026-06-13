@@ -219,12 +219,31 @@ class GuardrailResult(BaseModel):
     checks: list[VerificationItem]
 
 
+class RAGEvalResult(BaseModel):
+    faithfulness: float | None = None
+    answer_relevancy: float | None = None
+    context_precision: float | None = None
+    context_recall: float | None = None
+
+
+class RAGEvalRequest(BaseModel):
+    question: str
+    answer: str
+    contexts: list[str] = Field(default_factory=list)
+
+    @field_validator("question", "answer")
+    @classmethod
+    def validate_non_empty(cls, value: str) -> str:
+        return validate_question(value)
+
+
 class RAGChatResponse(BaseModel):
     question: str
     answer: str
     citations: list[RAGCitation]
     verification: GuardrailResult | None = None
     warnings: list[str] = Field(default_factory=list)
+    eval: RAGEvalResult | None = None
 
 
 class LeaseExtraction(BaseModel):

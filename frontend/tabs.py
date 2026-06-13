@@ -349,40 +349,6 @@ def _schedule_index_status_refresh() -> None:
         st.rerun()
 
 
-def render_s3_search_tab() -> None:
-    question = st.text_input("Question", key="rag_search_question")
-    submitted = st.button(
-        "Search Indexed Leases",
-        type="primary",
-        use_container_width=True,
-    )
-    if not submitted:
-        return
-
-    if not question.strip():
-        st.error("Enter a question before searching.")
-        return
-
-    with st.spinner("Searching indexed leases..."):
-        response = call_api("/rag/search", {"question": question, "top_k": 5})
-
-    if response is None:
-        return
-
-    matches = response.get("matches") or []
-    if not matches:
-        st.info("No matching indexed lease text was found.")
-        return
-
-    for match in matches:
-        score = match.get("score")
-        score_text = "" if score is None else f" - score {float(score):.2f}"
-        st.markdown(
-            f"#### {match.get('filename', match.get('key', 'Lease'))}{score_text}"
-        )
-        st.caption(str(match.get("key", "")))
-        st.write(match.get("snippet", ""))
-
 
 def render_s3_chat_tab() -> None:
     leases = _load_s3_leases()
@@ -447,9 +413,12 @@ def render_s3_chat_tab() -> None:
                 assistant_message["verification"] = response.get("verification")
             if response.get("warnings"):
                 assistant_message["warnings"] = response.get("warnings") or []
+            if response.get("eval") is not None:
+                assistant_message["eval"] = response.get("eval")
             history.append(assistant_message)
             response_placeholder.markdown(str(assistant_message["content"]))
             _render_rag_chat_warnings(assistant_message)
+            _render_ragas_scores(assistant_message.get("eval"))
             if show_sources:
                 _render_rag_citations(assistant_message.get("citations") or [])
 
@@ -491,6 +460,7 @@ def _render_chat_message(item: object, show_sources: bool) -> None:
         st.markdown(content)
         if role == "assistant":
             _render_rag_chat_warnings(item)
+            _render_ragas_scores(item.get("eval"))
             if show_sources:
                 _render_rag_citations(item.get("citations") or [])
 
@@ -504,6 +474,24 @@ def _render_rag_chat_warnings(item: dict[str, object]) -> None:
     verification = item.get("verification")
     if isinstance(verification, dict) and verification.get("overall_supported") is False:
         st.warning("The chat answer needs review against the indexed lease context.")
+
+
+def _render_ragas_scores(eval_data: object) -> None:
+    if not isinstance(eval_data, dict):
+        return
+    metrics = {
+        "Faithfulness": eval_data.get("faithfulness"),
+        "Relevancy": eval_data.get("answer_relevancy"),
+        "Ctx Precision": eval_data.get("context_precision"),
+        "Ctx Recall": eval_data.get("context_recall"),
+    }
+    available = {k: v for k, v in metrics.items() if v is not None}
+    if not available:
+        return
+    with st.expander("RAGAS quality scores", expanded=False):
+        cols = st.columns(len(available))
+        for col, (label, score) in zip(cols, available.items()):
+            col.metric(label, f"{float(score):.2f}")
 
 
 def _render_rag_citations(citations: list[object]) -> None:
