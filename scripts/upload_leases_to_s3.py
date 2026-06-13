@@ -16,7 +16,7 @@ SECRET_NAME = "dev/ds-may26/LeaseSummariser"
 
 
 def _fetch_secrets() -> dict:
-    region = os.getenv("REGION_NAME", os.getenv("AWS_REGION", "eu-west-2"))
+    region = os.getenv("AWS_REGION", os.getenv("AWS_REGION", "eu-west-2"))
     client = boto3.client("secretsmanager", region_name=region)
     try:
         response = client.get_secret_value(SecretId=SECRET_NAME)

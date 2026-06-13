@@ -49,9 +49,10 @@ class RecordingStreamlit:
         self.calls.append(("spinner", text))
         return nullcontext()
 
-    def columns(self, count: int):
+    def columns(self, count: int | list[int]):
         self.calls.append(("columns", count))
-        return [nullcontext() for _ in range(count)]
+        column_count = count if isinstance(count, int) else len(count)
+        return [nullcontext() for _ in range(column_count)]
 
     def container(self, **kwargs):
         self.calls.append(("container", kwargs))
@@ -368,6 +369,8 @@ def test_s3_chat_sends_selected_keys_and_preserves_history(monkeypatch):
         return {
             "question": payload["question"],
             "answer": "Rent is due on the first day of each month.",
+            "session_id": "session-1",
+            "saved_at": "2026-01-01T00:00:00+00:00",
             "citations": [
                 {
                     "key": "sample_leases/valid_lease_b.txt",
@@ -401,6 +404,7 @@ def test_s3_chat_sends_selected_keys_and_preserves_history(monkeypatch):
         {
             "role": "assistant",
             "content": "Rent is due on the first day of each month.",
+            "created_at": "2026-01-01T00:00:00+00:00",
             "citations": [
                 {
                     "key": "sample_leases/valid_lease_b.txt",
@@ -411,6 +415,10 @@ def test_s3_chat_sends_selected_keys_and_preserves_history(monkeypatch):
             ],
         },
     ]
+    assert fake_st.session_state["rag_chat_session_id"] == "session-1"
+    assert ("columns", 2) in fake_st.calls
+    assert ("markdown", "#### Leases") in fake_st.calls
+    assert ("markdown", "#### Saved Chats") in fake_st.calls
     assert ("container", {"height": 520, "border": True}) in fake_st.calls
     assert ("chat_message", "user") in fake_st.calls
     assert ("chat_message", "assistant") in fake_st.calls
@@ -454,6 +462,166 @@ def test_s3_chat_toggle_shows_sources_after_assistant_response(monkeypatch):
     assert sources_call in fake_st.calls
     assert fake_st.calls.index(assistant_call) < fake_st.calls.index(sources_call)
     assert ("write", "One indoor cat is permitted.") in fake_st.calls
+
+
+def test_s3_chat_sends_active_session_id(monkeypatch):
+    leases = s3_leases()
+    fake_st = RecordingStreamlit()
+    fake_st.chat_inputs["rag_chat_question"] = "When is rent due?"
+    fake_st.session_state["rag_chat_session_id"] = "session-abc"
+    monkeypatch.setattr(tabs, "st", fake_st)
+    monkeypatch.setattr(tabs, "call_api_get", lambda path: leases)
+
+    calls = []
+
+    def fake_call_api(path, payload):
+        calls.append((path, payload))
+        return {
+            "question": payload["question"],
+            "answer": "Rent is due on the first day.",
+            "session_id": "session-abc",
+            "citations": [],
+        }
+
+    monkeypatch.setattr(tabs, "call_api", fake_call_api)
+
+    tabs.render_s3_chat_tab()
+
+    assert calls[0][1]["session_id"] == "session-abc"
+
+
+def test_s3_chat_loads_saved_session_from_side_panel(monkeypatch):
+    leases = s3_leases()
+    fake_st = RecordingStreamlit()
+    fake_st.buttons["Rent question - 2026-01-01T00:00:00"] = True
+    monkeypatch.setattr(tabs, "st", fake_st)
+
+    def fake_call_api_get(path):
+        if path == "/s3/leases":
+            return leases
+        if path == "/rag/chat/sessions":
+            return {
+                "sessions": [
+                    {
+                        "session_id": "session-abc",
+                        "title": "Rent question",
+                        "lease_keys": ["sample_leases/valid_lease_b.txt"],
+                        "message_count": 2,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ]
+            }
+        if path == "/rag/chat/sessions/session-abc":
+            return {
+                "session_id": "session-abc",
+                "title": "Rent question",
+                "lease_keys": ["sample_leases/valid_lease_b.txt"],
+                "message_count": 2,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "messages": [
+                    {"role": "user", "content": "What is the rent?"},
+                    {
+                        "role": "assistant",
+                        "content": "Rent is 1,500 pounds.",
+                        "citations": [],
+                    },
+                ],
+            }
+        return None
+
+    monkeypatch.setattr(tabs, "call_api_get", fake_call_api_get)
+
+    tabs.render_s3_chat_tab()
+
+    assert fake_st.session_state["rag_chat_session_id"] == "session-abc"
+    assert fake_st.session_state["rag_chat_history"] == [
+        {"role": "user", "content": "What is the rent?"},
+        {
+            "role": "assistant",
+            "content": "Rent is 1,500 pounds.",
+            "citations": [],
+        },
+    ]
+    assert fake_st.session_state["rag_chat_pending_lease_keys"] == [
+        "sample_leases/valid_lease_b.txt"
+    ]
+
+
+def test_s3_chat_applies_pending_lease_selection_before_widget(monkeypatch):
+    leases = s3_leases()
+    fake_st = RecordingStreamlit()
+    fake_st.session_state["rag_chat_pending_lease_keys"] = [
+        "sample_leases/valid_lease_b.txt"
+    ]
+    monkeypatch.setattr(tabs, "st", fake_st)
+    monkeypatch.setattr(tabs, "call_api_get", lambda path: leases)
+
+    tabs.render_s3_chat_tab()
+
+    assert fake_st.session_state["rag_chat_lease_keys"] == [leases[1]]
+    assert "rag_chat_pending_lease_keys" not in fake_st.session_state
+
+
+def test_s3_chat_new_chat_clears_visible_session(monkeypatch):
+    fake_st = RecordingStreamlit()
+    fake_st.buttons["New Chat"] = True
+    fake_st.session_state["rag_chat_session_id"] = "session-abc"
+    fake_st.session_state["rag_chat_history"] = [
+        {"role": "user", "content": "What is the rent?"}
+    ]
+    monkeypatch.setattr(tabs, "st", fake_st)
+    monkeypatch.setattr(tabs, "call_api_get", lambda path: s3_leases())
+
+    tabs.render_s3_chat_tab()
+
+    assert fake_st.session_state["rag_chat_history"] == []
+    assert "rag_chat_session_id" not in fake_st.session_state
+    assert fake_st.session_state["rag_chat_pending_lease_keys"] == []
+
+
+def test_s3_chat_clear_history_is_below_chat_window(monkeypatch):
+    fake_st = RecordingStreamlit()
+    fake_st.buttons["Clear History"] = True
+    fake_st.session_state["rag_chat_session_id"] = "session-abc"
+    fake_st.session_state["rag_chat_history"] = [
+        {"role": "user", "content": "What is the rent?"}
+    ]
+    monkeypatch.setattr(tabs, "st", fake_st)
+    monkeypatch.setattr(tabs, "call_api_get", lambda path: s3_leases())
+
+    tabs.render_s3_chat_tab()
+
+    assert fake_st.session_state["rag_chat_history"] == []
+    assert "rag_chat_session_id" not in fake_st.session_state
+    assert fake_st.calls.index(("container", {"height": 520, "border": True})) < fake_st.calls.index(
+        ("button", "Clear History")
+    )
+
+
+def test_s3_chat_delete_saved_session(monkeypatch):
+    fake_st = RecordingStreamlit()
+    fake_st.buttons["Delete Saved Chat"] = True
+    fake_st.session_state["rag_chat_session_id"] = "session-abc"
+    fake_st.session_state["rag_chat_history"] = [
+        {"role": "user", "content": "What is the rent?"}
+    ]
+    monkeypatch.setattr(tabs, "st", fake_st)
+    monkeypatch.setattr(tabs, "call_api_get", lambda path: s3_leases())
+
+    deleted = []
+    monkeypatch.setattr(
+        tabs,
+        "call_api_delete",
+        lambda path: deleted.append(path) or True,
+    )
+
+    tabs.render_s3_chat_tab()
+
+    assert deleted == ["/rag/chat/sessions/session-abc"]
+    assert fake_st.session_state["rag_chat_history"] == []
+    assert "rag_chat_session_id" not in fake_st.session_state
 
 
 def test_s3_chat_displays_grounding_warnings(monkeypatch):

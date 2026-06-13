@@ -40,6 +40,21 @@ def call_api(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     return response.json()
 
 
+def call_api_delete(path: str) -> bool:
+    url = f"{API_BASE_URL}{path}"
+    try:
+        response = httpx.delete(url, timeout=REQUEST_TIMEOUT_SECONDS)
+    except httpx.RequestError as exc:
+        st.error(f"Could not reach API at {API_BASE_URL}: {exc}")
+        return False
+
+    if response.status_code >= 400:
+        render_api_error(response)
+        return False
+
+    return True
+
+
 def call_api_files(path: str, files: dict[str, FilePart]) -> dict[str, Any] | None:
     url = f"{API_BASE_URL}{path}"
     try:
