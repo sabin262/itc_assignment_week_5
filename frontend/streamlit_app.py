@@ -28,24 +28,24 @@ def main() -> None:
             render_compare_tab()
     else:
         (
+            upload_tab,
+            index_tab,
             summarise_tab,
             compare_tab,
-            index_tab,
-            upload_tab,
             chat_tab,
-        ) = st.tabs(["Summarise", "Compare", "Index", "Upload & Index", "Chat"])
+        ) = st.tabs(["Index & Upload", "Index", "Summarise", "Compare", "Chat"])
+
+        with upload_tab:
+            render_upload_index_tab()
+
+        with index_tab:
+            render_s3_index_tab()
 
         with summarise_tab:
             render_s3_summarise_tab()
 
         with compare_tab:
             render_s3_compare_tab()
-
-        with index_tab:
-            render_s3_index_tab()
-
-        with upload_tab:
-            render_upload_index_tab()
 
         with chat_tab:
             render_s3_chat_tab()
