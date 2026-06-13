@@ -32,6 +32,8 @@ from app.schemas import (
     RAGChatResponse,
     RAGChatSessionListResponse,
     RAGChatSessionResponse,
+    RAGEvalRequest,
+    RAGEvalResult,
     RAGIndexJobStatus,
     RAGIndexResponse,
     RAGSearchRequest,
@@ -390,6 +392,24 @@ def chat_with_rag_leases(
     except ChatHistoryError as exc:
         response.warnings.append(f"Chat history could not be saved: {exc}")
         return response
+
+
+@app.post("/rag/evaluate", response_model=RAGEvalResult)
+def evaluate_rag_answer(request: RAGEvalRequest) -> RAGEvalResult:
+    from app.evaluation_service import EvaluationError, evaluate_rag_response
+    from app.llm_client import get_langchain_embeddings, get_langchain_llm
+
+    settings = get_settings()
+    try:
+        return evaluate_rag_response(
+            question=request.question,
+            answer=request.answer,
+            contexts=request.contexts,
+            langchain_llm=get_langchain_llm(settings),
+            langchain_embeddings=get_langchain_embeddings(settings),
+        )
+    except EvaluationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/upload-and-index", response_model=UploadAndIndexResponse)

@@ -17,6 +17,37 @@ from app.prompts import (
 from app.schemas import GuardrailResult, LeaseComparison, LeaseExtraction
 
 
+def get_langchain_llm(settings: Settings) -> Any:
+    """Return an AzureChatOpenAI instance using the app's existing Azure credentials."""
+    try:
+        from langchain_openai import AzureChatOpenAI
+    except ImportError as exc:
+        raise ImportError("langchain-openai is not installed.") from exc
+
+    return AzureChatOpenAI(
+        azure_deployment=settings.azure_openai_deployment,
+        azure_endpoint=settings.azure_openai_endpoint,
+        api_key=settings.azure_openai_api_key,
+        api_version=settings.azure_openai_api_version,
+        temperature=0.0,
+    )
+
+
+def get_langchain_embeddings(settings: Settings) -> Any:
+    """Return an AzureOpenAIEmbeddings instance using the app's existing Azure credentials."""
+    try:
+        from langchain_openai import AzureOpenAIEmbeddings
+    except ImportError as exc:
+        raise ImportError("langchain-openai is not installed.") from exc
+
+    return AzureOpenAIEmbeddings(
+        azure_deployment=settings.azure_openai_embedding_deployment or "",
+        azure_endpoint=settings.azure_openai_endpoint,
+        api_key=settings.azure_openai_api_key,
+        api_version=settings.azure_openai_api_version,
+    )
+
+
 class LLMResponseError(RuntimeError):
     """Raised when the model response cannot be parsed or validated."""
 
