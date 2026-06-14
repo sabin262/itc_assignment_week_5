@@ -643,8 +643,22 @@ def test_chat_answers_cheapest_rent_from_summaries_without_vector_query():
     chat_client = FakeChatClient()
     summary_store = FakeSummaryStore()
     summary_store.records = [
-        summary_record("sample_leases/lease_a.txt", "1,875 pounds", 1875),
-        summary_record("sample_leases/lease_b.txt", "1,250 pounds", 1250),
+        custom_summary_record(
+            "sample_leases/lease_a.txt",
+            "1,875 pounds",
+            1875,
+            property_address="88 High Street",
+            tenant_name="Alex Rivera",
+            landlord_name="Morgan Properties",
+        ),
+        custom_summary_record(
+            "sample_leases/lease_b.txt",
+            "1,250 pounds",
+            1250,
+            property_address="12 Garden Street",
+            tenant_name="Bailey Chen",
+            landlord_name="Oak Homes",
+        ),
     ]
     service = make_service(
         vector_store=vector_store,
@@ -661,7 +675,9 @@ def test_chat_answers_cheapest_rent_from_summaries_without_vector_query():
     )
 
     assert "1,250 pounds" in response.answer
-    assert "lease_b.txt" in response.answer
+    assert "- Property: 12 Garden Street" in response.answer
+    assert "- Tenant: Bailey Chen" in response.answer
+    assert "lease_b.txt" not in response.answer
     assert response.citations == [
         RAGCitation(
             key="sample_leases/lease_b.txt",
@@ -683,8 +699,18 @@ def test_chat_answers_cheapest_rent_from_summaries_without_vector_query():
 def test_chat_cheapest_rent_respects_selected_lease_filter():
     summary_store = FakeSummaryStore()
     summary_store.records = [
-        summary_record("sample_leases/lease_a.txt", "1,875 pounds", 1875),
-        summary_record("sample_leases/lease_b.txt", "1,250 pounds", 1250),
+        custom_summary_record(
+            "sample_leases/lease_a.txt",
+            "1,875 pounds",
+            1875,
+            property_address="88 High Street",
+        ),
+        custom_summary_record(
+            "sample_leases/lease_b.txt",
+            "1,250 pounds",
+            1250,
+            property_address="12 Garden Street",
+        ),
     ]
     service = make_service(summary_store=summary_store)
 
@@ -696,14 +722,25 @@ def test_chat_cheapest_rent_respects_selected_lease_filter():
     )
 
     assert "1,875 pounds" in response.answer
-    assert "lease_a.txt" in response.answer
+    assert "88 High Street" in response.answer
+    assert "lease_a.txt" not in response.answer
 
 
 def test_chat_cheapest_rent_discloses_unparseable_summary_values():
     summary_store = FakeSummaryStore()
     summary_store.records = [
-        summary_record("sample_leases/lease_a.txt", "1,250 pounds", 1250),
-        summary_record("sample_leases/lease_b.txt", None, None),
+        custom_summary_record(
+            "sample_leases/lease_a.txt",
+            "1,250 pounds",
+            1250,
+            property_address="12 Garden Street",
+        ),
+        custom_summary_record(
+            "sample_leases/lease_b.txt",
+            None,
+            None,
+            property_address="99 Missing Rent Road",
+        ),
     ]
     service = make_service(summary_store=summary_store)
 
@@ -715,7 +752,221 @@ def test_chat_cheapest_rent_discloses_unparseable_summary_values():
     )
 
     assert "1,250 pounds" in response.answer
-    assert "lease_b.txt" in response.answer
+    assert "99 Missing Rent Road" in response.answer
+    assert "lease_b.txt" not in response.answer
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_value", "expected_property"),
+    [
+        ("Which property is cheapest?", "950 pounds", "Budget Flat"),
+        ("Which lease is cheapest?", "950 pounds", "Budget Flat"),
+        ("What is the cheapest property?", "950 pounds", "Budget Flat"),
+        ("Which one is most expensive?", "2,200 pounds", "Premium Penthouse"),
+    ],
+)
+def test_chat_implies_monthly_rent_for_property_price_comparisons(
+    question,
+    expected_value,
+    expected_property,
+):
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record(
+            "sample_leases/budget_flat.txt",
+            "950 pounds",
+            950,
+            property_address="Budget Flat",
+        ),
+        custom_summary_record(
+            "sample_leases/premium_penthouse.txt",
+            "2,200 pounds",
+            2200,
+            property_address="Premium Penthouse",
+        ),
+    ]
+    embedding_client = FakeEmbeddingClient()
+    embedding_client.fail_on_call = True
+    chat_client = FakeChatClient()
+    service = make_service(
+        embedding_client=embedding_client,
+        chat_client=chat_client,
+        summary_store=summary_store,
+    )
+
+    response = service.chat(question=question, lease_keys=[], history=[], top_k=5)
+
+    assert expected_value in response.answer
+    assert f"- Property: {expected_property}" in response.answer
+    assert "The property addresses for the leases are" not in response.answer
+    assert "budget_flat.txt" not in response.answer
+    assert "premium_penthouse.txt" not in response.answer
+    assert chat_client.calls == []
+
+
+def test_chat_explicit_deposit_comparison_beats_implied_property_rent():
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record(
+            "sample_leases/cheap_rent_high_deposit.txt",
+            "900 pounds",
+            900,
+            security_deposit_amount="3,000 pounds",
+            property_address="Cheap Rent House",
+        ),
+        custom_summary_record(
+            "sample_leases/high_rent_low_deposit.txt",
+            "2,000 pounds",
+            2000,
+            security_deposit_amount="500 pounds",
+            property_address="Low Deposit House",
+        ),
+    ]
+    embedding_client = FakeEmbeddingClient()
+    embedding_client.fail_on_call = True
+    service = make_service(
+        embedding_client=embedding_client,
+        chat_client=FakeChatClient(),
+        summary_store=summary_store,
+    )
+
+    response = service.chat(
+        question="Which property has the lowest security deposit?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+
+    assert "500 pounds" in response.answer
+    assert "Low Deposit House" in response.answer
+    assert "900 pounds" not in response.answer
+
+
+def test_chat_returns_all_tied_cheapest_rent_winners():
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record(
+            "sample_leases/lease_a.txt",
+            "1,000 pounds",
+            1000,
+            property_address="Tie House A",
+        ),
+        custom_summary_record(
+            "sample_leases/lease_b.txt",
+            "1,000 pounds",
+            1000,
+            property_address="Tie House B",
+        ),
+        custom_summary_record(
+            "sample_leases/lease_c.txt",
+            "1,400 pounds",
+            1400,
+            property_address="Higher Rent House",
+        ),
+    ]
+    embedding_client = FakeEmbeddingClient()
+    embedding_client.fail_on_call = True
+    service = make_service(
+        embedding_client=embedding_client,
+        chat_client=FakeChatClient(),
+        summary_store=summary_store,
+    )
+
+    response = service.chat(
+        question="Which property is cheapest?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+
+    assert "These leases are tied" in response.answer
+    assert "- Tie House A" in response.answer
+    assert "- Tie House B" in response.answer
+    assert "Higher Rent House" not in response.answer
+    assert len(response.citations) == 2
+
+
+def test_chat_compares_notice_period_duration_from_summaries():
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record(
+            "sample_leases/month_notice.txt",
+            property_address="Month Notice House",
+            notice_period_to_vacate="one month",
+        ),
+        custom_summary_record(
+            "sample_leases/two_month_notice.txt",
+            property_address="Two Month Notice House",
+            notice_period_to_vacate="two months",
+        ),
+        custom_summary_record(
+            "sample_leases/four_week_notice.txt",
+            property_address="Four Week Notice House",
+            notice_period_to_vacate="4 weeks",
+        ),
+    ]
+    embedding_client = FakeEmbeddingClient()
+    embedding_client.fail_on_call = True
+    chat_client = FakeChatClient()
+    service = make_service(
+        embedding_client=embedding_client,
+        chat_client=chat_client,
+        summary_store=summary_store,
+    )
+
+    shortest = service.chat(
+        question="Which lease has the shortest notice period?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+    longest = service.chat(
+        question="Which lease has the longest notice period?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+
+    assert "4 weeks" in shortest.answer
+    assert "Four Week Notice House" in shortest.answer
+    assert "two months" in longest.answer
+    assert "Two Month Notice House" in longest.answer
+    assert chat_client.calls == []
+
+
+def test_chat_unsupported_comparison_wording_falls_back_to_rag_path():
+    vector_store = FakeVectorStore()
+    vector_store.query_chunks = [
+        chunk(
+            "sample_leases/lease_a.txt",
+            "The landlord is Morgan Properties.",
+            0,
+        )
+    ]
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record(
+            "sample_leases/lease_a.txt",
+            property_address="12 Garden Street",
+            landlord_name="Morgan Properties",
+        )
+    ]
+    chat_client = FakeChatClient()
+    service = make_service(
+        vector_store=vector_store,
+        chat_client=chat_client,
+        summary_store=summary_store,
+    )
+
+    service.chat(
+        question="Which landlord is highest?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+
+    assert vector_store.queries
+    assert chat_client.calls
 
 
 @pytest.mark.parametrize(
@@ -795,9 +1046,21 @@ def test_chat_exact_summary_lookup_respects_selected_lease_filter():
 def test_chat_lists_all_tenants_from_indexed_summaries():
     summary_store = FakeSummaryStore()
     summary_store.records = [
-        custom_summary_record("sample_leases/lease_a.txt", tenant_name="Alex Rivera"),
-        custom_summary_record("sample_leases/lease_b.txt", tenant_name="Bailey Chen"),
-        custom_summary_record("sample_leases/lease_c.txt", tenant_name=None),
+        custom_summary_record(
+            "sample_leases/lease_a.txt",
+            tenant_name="Alex Rivera",
+            property_address="12 Garden Street",
+        ),
+        custom_summary_record(
+            "sample_leases/lease_b.txt",
+            tenant_name="Bailey Chen",
+            property_address="22 Oak Avenue",
+        ),
+        custom_summary_record(
+            "sample_leases/lease_c.txt",
+            tenant_name=None,
+            property_address="33 Missing Tenant Road",
+        ),
     ]
     embedding_client = FakeEmbeddingClient()
     embedding_client.fail_on_call = True
@@ -817,7 +1080,8 @@ def test_chat_lists_all_tenants_from_indexed_summaries():
     assert "Alex Rivera" in response.answer
     assert "Bailey Chen" in response.answer
     assert "- For 12 Garden Street: Alex Rivera" in response.answer
-    assert "lease_c.txt" in response.answer
+    assert "33 Missing Tenant Road" in response.answer
+    assert "lease_c.txt" not in response.answer
     assert len(response.citations) == 2
 
 
@@ -864,10 +1128,12 @@ def test_chat_formats_multi_lease_property_addresses_as_structured_lines():
         custom_summary_record(
             "sample_leases/rowan_mews_lease.txt",
             property_address="19 Rowan Mews, Cambridge CB4 1ZX",
+            tenant_name="Priya Shah",
         ),
         custom_summary_record(
             "sample_leases/ashbourne_court_lease.txt",
             property_address="Maisonette 8, Ashbourne Court, 3 Belvedere Crescent, Bath BA1 5QY",
+            tenant_name="Amelia Chen",
         ),
     ]
     embedding_client = FakeEmbeddingClient()
@@ -887,11 +1153,93 @@ def test_chat_formats_multi_lease_property_addresses_as_structured_lines():
 
     assert response.answer == (
         "The property addresses for the leases are:\n\n"
-        "- rowan mews lease: 19 Rowan Mews, Cambridge CB4 1ZX\n"
-        "- ashbourne court lease: Maisonette 8, Ashbourne Court, "
+        "- For Priya Shah: 19 Rowan Mews, Cambridge CB4 1ZX\n"
+        "- For Amelia Chen: Maisonette 8, Ashbourne Court, "
         "3 Belvedere Crescent, Bath BA1 5QY"
     )
     assert len(response.citations) == 2
+
+
+def test_chat_formats_single_lease_list_fields_as_bullets():
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record(
+            "sample_leases/lease_a.txt",
+            property_address="12 Garden Street",
+            tenant_obligations=[
+                "Keep the home clean.",
+                "Report maintenance problems promptly.",
+            ],
+        )
+    ]
+    embedding_client = FakeEmbeddingClient()
+    embedding_client.fail_on_call = True
+    service = make_service(
+        embedding_client=embedding_client,
+        chat_client=FakeChatClient(),
+        summary_store=summary_store,
+    )
+
+    response = service.chat(
+        question="What are the tenant obligations?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+
+    assert response.answer == (
+        "For 12 Garden Street, the tenant obligations are:\n\n"
+        "- Keep the home clean.\n"
+        "- Report maintenance problems promptly."
+    )
+    assert "Keep the home clean.; Report maintenance problems promptly." not in response.answer
+
+
+def test_chat_formats_multi_lease_list_fields_as_grouped_bullets():
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record(
+            "sample_leases/lease_a.txt",
+            property_address="12 Garden Street",
+            landlord_obligations=[
+                "Make repairs.",
+                "Give notice before entry.",
+            ],
+        ),
+        custom_summary_record(
+            "sample_leases/lease_b.txt",
+            property_address="22 Oak Avenue",
+            landlord_obligations=[
+                "Maintain the structure.",
+                "Insure the building.",
+            ],
+        ),
+    ]
+    embedding_client = FakeEmbeddingClient()
+    embedding_client.fail_on_call = True
+    service = make_service(
+        embedding_client=embedding_client,
+        chat_client=FakeChatClient(),
+        summary_store=summary_store,
+    )
+
+    response = service.chat(
+        question="What are the landlord obligations?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+
+    assert response.answer == (
+        "The landlord obligations for the leases are:\n\n"
+        "For 12 Garden Street:\n"
+        "- Make repairs.\n"
+        "- Give notice before entry.\n\n"
+        "For 22 Oak Avenue:\n"
+        "- Maintain the structure.\n"
+        "- Insure the building."
+    )
+    assert "Make repairs.; Give notice before entry." not in response.answer
 
 
 def test_chat_lists_leases_with_unusual_clauses_from_summaries():
@@ -899,9 +1247,17 @@ def test_chat_lists_leases_with_unusual_clauses_from_summaries():
     summary_store.records = [
         custom_summary_record(
             "sample_leases/lease_a.txt",
-            unusual_clauses=["Pets require written consent."],
+            unusual_clauses=[
+                "Pets require written consent.",
+                "Subletting requires landlord approval.",
+            ],
+            property_address="12 Garden Street",
         ),
-        custom_summary_record("sample_leases/lease_b.txt", unusual_clauses=None),
+        custom_summary_record(
+            "sample_leases/lease_b.txt",
+            unusual_clauses=None,
+            property_address="22 Oak Avenue",
+        ),
     ]
     embedding_client = FakeEmbeddingClient()
     embedding_client.fail_on_call = True
@@ -919,8 +1275,11 @@ def test_chat_lists_leases_with_unusual_clauses_from_summaries():
     )
 
     assert "Pets require written consent." in response.answer
-    assert "lease a" in response.answer
-    assert "lease_b.txt" in response.answer
+    assert "- Pets require written consent." in response.answer
+    assert "- Subletting requires landlord approval." in response.answer
+    assert "12 Garden Street" in response.answer
+    assert "22 Oak Avenue" in response.answer
+    assert "lease_b.txt" not in response.answer
     assert response.citations[0].source_type == "summary"
 
 
@@ -932,12 +1291,14 @@ def test_chat_compares_deposit_and_dates_from_summaries_without_vector_or_llm():
             security_deposit_amount="1,000 pounds",
             lease_start_date="1 February 2026",
             lease_end_date="31 December 2026",
+            property_address="88 High Street",
         ),
         custom_summary_record(
             "sample_leases/lease_b.txt",
             security_deposit_amount="2,000 pounds",
             lease_start_date="1 January 2026",
             lease_end_date="31 January 2027",
+            property_address="12 Garden Street",
         ),
     ]
     embedding_client = FakeEmbeddingClient()
@@ -969,11 +1330,12 @@ def test_chat_compares_deposit_and_dates_from_summaries_without_vector_or_llm():
     )
 
     assert "2,000 pounds" in highest_deposit.answer
-    assert "lease_b.txt" in highest_deposit.answer
+    assert "12 Garden Street" in highest_deposit.answer
     assert "1 January 2026" in earliest_start.answer
-    assert "lease_b.txt" in earliest_start.answer
+    assert "12 Garden Street" in earliest_start.answer
     assert "31 January 2027" in latest_end.answer
-    assert "lease_b.txt" in latest_end.answer
+    assert "12 Garden Street" in latest_end.answer
+    assert "lease_b.txt" not in highest_deposit.answer
     assert chat_client.calls == []
 
 
@@ -983,10 +1345,12 @@ def test_chat_comparison_discloses_missing_or_unparseable_summary_values():
         custom_summary_record(
             "sample_leases/lease_a.txt",
             security_deposit_amount="1,000 pounds",
+            property_address="12 Garden Street",
         ),
         custom_summary_record(
             "sample_leases/lease_b.txt",
             security_deposit_amount="not stated",
+            property_address="99 Missing Deposit Road",
         ),
     ]
     service = make_service(summary_store=summary_store)
@@ -999,8 +1363,56 @@ def test_chat_comparison_discloses_missing_or_unparseable_summary_values():
     )
 
     assert "1,000 pounds" in response.answer
-    assert "lease_b.txt" in response.answer
+    assert "99 Missing Deposit Road" in response.answer
+    assert "lease_b.txt" not in response.answer
     assert "missing or unparseable" in response.answer
+
+
+def test_chat_missing_answers_use_document_name_when_no_human_label_exists():
+    summary_store = FakeSummaryStore()
+    summary_store.records = [
+        custom_summary_record(
+            "sample_leases/complete_metadata.txt",
+            security_deposit_amount="1,000 pounds",
+            property_address="12 Garden Street",
+            tenant_name="Alex Rivera",
+            landlord_name="Morgan Properties",
+        ),
+        custom_summary_record(
+            "sample_leases/blank_metadata_lease.txt",
+            security_deposit_amount=None,
+            property_address=None,
+            tenant_name=None,
+            landlord_name=None,
+        ),
+    ]
+    embedding_client = FakeEmbeddingClient()
+    embedding_client.fail_on_call = True
+    chat_client = FakeChatClient()
+    service = make_service(
+        embedding_client=embedding_client,
+        chat_client=chat_client,
+        summary_store=summary_store,
+    )
+
+    missing_lookup = service.chat(
+        question="Which leases are missing tenant name?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+    missing_comparison_value = service.chat(
+        question="Which lease has the lowest security deposit?",
+        lease_keys=[],
+        history=[],
+        top_k=5,
+    )
+
+    assert "- blank_metadata_lease.txt" in missing_lookup.answer
+    assert "Indexed lease" not in missing_lookup.answer
+    assert "- blank_metadata_lease.txt" in missing_comparison_value.answer
+    assert "Indexed lease" not in missing_comparison_value.answer
+    assert chat_client.calls == []
 
 
 def test_chat_cheapest_rent_falls_back_to_selected_indexed_chunks_without_summaries():

@@ -15,6 +15,34 @@ from frontend.renderers import render_compare_response, render_summary_response
 S3LeaseOption = dict[str, object]
 
 
+STICKY_CHAT_INPUT_CSS = """
+<style>
+div[data-testid="stChatInput"],
+.stChatInput {
+    position: fixed;
+    left: 22rem;
+    right: 2rem;
+    bottom: 0;
+    z-index: 1000;
+    padding: 0.75rem 0 1rem;
+    background: var(--background-color);
+}
+
+div[data-testid="stAppViewContainer"] .main .block-container {
+    padding-bottom: 7rem;
+}
+
+@media (max-width: 900px) {
+    div[data-testid="stChatInput"],
+    .stChatInput {
+        left: 1rem;
+        right: 1rem;
+    }
+}
+</style>
+"""
+
+
 def render_summarise_tab() -> None:
     lease_input_value = lease_input(
         key_prefix="summarise",
@@ -355,94 +383,99 @@ def render_s3_chat_tab() -> None:
     if leases is None:
         return
 
+    _inject_sticky_chat_input_styles()
     history = st.session_state.setdefault("rag_chat_history", [])
-    side_panel, chat_panel = st.columns(2)
+    _render_chat_history_sidebar(leases)
+    selected_leases = _render_chat_lease_selector(leases)
 
-    with side_panel:
-        selected_leases = _render_chat_side_panel(leases)
+    show_sources = st.toggle(
+        "Show sources",
+        value=False,
+        key="rag_chat_show_sources",
+    )
+    chat_window = st.container(height=520, border=True)
+    with chat_window:
+        _render_chat_history(history, show_sources)
 
-    with chat_panel:
-        show_sources = st.toggle(
-            "Show sources",
-            value=False,
-            key="rag_chat_show_sources",
-        )
-        chat_window = st.container(height=520, border=True)
-        with chat_window:
-            _render_chat_history(history, show_sources)
+    clear_chat = st.button("Clear History", use_container_width=True)
+    if clear_chat:
+        _clear_current_chat()
+        _rerun_if_available()
 
-        clear_chat = st.button("Clear History", use_container_width=True)
-        if clear_chat:
-            _clear_current_chat()
-            _rerun_if_available()
+    question = st.chat_input(
+        "Ask about the indexed leases...",
+        key="rag_chat_question",
+    )
+    if not question:
+        return
 
-        question = st.chat_input(
-            "Ask about the indexed leases...",
-            key="rag_chat_question",
-        )
-        if not question:
-            return
+    cleaned_question = question.strip()
+    if not cleaned_question:
+        return
 
-        cleaned_question = question.strip()
-        if not cleaned_question:
-            return
+    api_history = _chat_history_for_api(history)
+    history.append({"role": "user", "content": cleaned_question})
 
-        api_history = _chat_history_for_api(history)
-        history.append({"role": "user", "content": cleaned_question})
+    payload = {
+        "question": cleaned_question,
+        "lease_keys": [str(lease["key"]) for lease in selected_leases],
+        "history": api_history,
+        "top_k": 5,
+    }
+    session_id = st.session_state.get("rag_chat_session_id")
+    if isinstance(session_id, str) and session_id:
+        payload["session_id"] = session_id
 
-        payload = {
-            "question": cleaned_question,
-            "lease_keys": [str(lease["key"]) for lease in selected_leases],
-            "history": api_history,
-            "top_k": 5,
-        }
-        session_id = st.session_state.get("rag_chat_session_id")
-        if isinstance(session_id, str) and session_id:
-            payload["session_id"] = session_id
+    with chat_window:
+        _render_chat_message(history[-1], show_sources)
+        with st.chat_message("assistant"):
+            response_placeholder = st.empty()
+            response_placeholder.markdown("_Searching indexed lease text..._")
+            response = call_api("/rag/chat", payload)
 
-        with chat_window:
-            _render_chat_message(history[-1], show_sources)
-            with st.chat_message("assistant"):
-                response_placeholder = st.empty()
-                response_placeholder.markdown("_Searching indexed lease text..._")
-                response = call_api("/rag/chat", payload)
+            if response is None:
+                response_placeholder.empty()
+                return
 
-                if response is None:
-                    response_placeholder.empty()
-                    return
-
-                if response.get("session_id"):
-                    st.session_state["rag_chat_session_id"] = response["session_id"]
-                assistant_message = _assistant_message_from_response(response)
-                history.append(assistant_message)
-                response_placeholder.markdown(str(assistant_message["content"]))
-                _render_rag_chat_warnings(assistant_message)
-                _render_ragas_scores(assistant_message.get("eval"))
-                if show_sources:
-                    _render_rag_citations(assistant_message.get("citations") or [])
+            if response.get("session_id"):
+                st.session_state["rag_chat_session_id"] = response["session_id"]
+            assistant_message = _assistant_message_from_response(response)
+            history.append(assistant_message)
+            response_placeholder.markdown(str(assistant_message["content"]))
+            _render_rag_chat_warnings(assistant_message)
+            _render_ragas_scores(assistant_message.get("eval"))
+            if show_sources:
+                _render_rag_citations(assistant_message.get("citations") or [])
 
 
-def _render_chat_side_panel(leases: list[S3LeaseOption]) -> list[S3LeaseOption]:
+def _inject_sticky_chat_input_styles() -> None:
+    st.markdown(STICKY_CHAT_INPUT_CSS, unsafe_allow_html=True)
+
+
+def _render_chat_lease_selector(leases: list[S3LeaseOption]) -> list[S3LeaseOption]:
     st.markdown("#### Leases")
     _apply_pending_lease_selection(leases)
-    selected_leases = st.multiselect(
+    return st.multiselect(
         "Leases",
         leases,
         format_func=_s3_lease_label,
         key="rag_chat_lease_keys",
     )
 
-    st.markdown("#### Saved Chats")
+
+def _render_chat_history_sidebar(leases: list[S3LeaseOption]) -> None:
+    sidebar = getattr(st, "sidebar", st)
+    sidebar.markdown("#### Saved Chats")
     sessions = _load_chat_sessions()
     if not sessions:
-        st.info("No saved chats yet.")
+        sidebar.info("No saved chats yet.")
     for session in sessions:
         if not isinstance(session, dict):
             continue
         session_id = str(session.get("session_id") or "")
         if not session_id:
             continue
-        if st.button(
+        if sidebar.button(
             _chat_session_label(session),
             use_container_width=True,
             key=f"load_chat_{session_id}",
@@ -450,18 +483,16 @@ def _render_chat_side_panel(leases: list[S3LeaseOption]) -> list[S3LeaseOption]:
             _load_chat_session(session_id, leases)
             _rerun_if_available()
 
-    if st.button("New Chat", use_container_width=True):
+    if sidebar.button("New Chat", use_container_width=True):
         _clear_current_chat(clear_leases=True)
         _rerun_if_available()
 
     active_session_id = st.session_state.get("rag_chat_session_id")
     if isinstance(active_session_id, str) and active_session_id:
-        if st.button("Delete Saved Chat", use_container_width=True):
+        if sidebar.button("Delete Saved Chat", use_container_width=True):
             if call_api_delete(f"/rag/chat/sessions/{active_session_id}"):
                 _clear_current_chat(clear_leases=True)
                 _rerun_if_available()
-
-    return selected_leases
 
 
 def _load_chat_sessions() -> list[dict[str, object]]:

@@ -14,6 +14,22 @@ class RecordingPlaceholder:
         self.calls.append(("placeholder_empty",))
 
 
+class RecordingSidebar:
+    def __init__(self, calls, buttons: dict[str, bool]) -> None:
+        self.calls = calls
+        self.buttons = buttons
+
+    def markdown(self, text: str) -> None:
+        self.calls.append(("sidebar_markdown", text))
+
+    def info(self, text: str) -> None:
+        self.calls.append(("sidebar_info", text))
+
+    def button(self, label: str, **_kwargs) -> bool:
+        self.calls.append(("sidebar_button", label))
+        return self.buttons.get(label, False)
+
+
 class RecordingStreamlit:
     def __init__(self) -> None:
         self.calls = []
@@ -25,6 +41,7 @@ class RecordingStreamlit:
         self.toggles: dict[str, bool] = {}
         self.radios: dict[str, str] = {}
         self.session_state: dict[str, object] = {}
+        self.sidebar = RecordingSidebar(self.calls, self.buttons)
 
     def info(self, text: str) -> None:
         self.calls.append(("info", text))
@@ -96,7 +113,10 @@ class RecordingStreamlit:
         self.calls.append(("toggle", label, key))
         return self.toggles.get(key, value)
 
-    def markdown(self, text: str) -> None:
+    def markdown(self, text: str, **kwargs) -> None:
+        if kwargs:
+            self.calls.append(("markdown", text, kwargs))
+            return
         self.calls.append(("markdown", text))
 
     def write(self, value) -> None:
@@ -416,9 +436,9 @@ def test_s3_chat_sends_selected_keys_and_preserves_history(monkeypatch):
         },
     ]
     assert fake_st.session_state["rag_chat_session_id"] == "session-1"
-    assert ("columns", 2) in fake_st.calls
+    assert ("columns", 2) not in fake_st.calls
     assert ("markdown", "#### Leases") in fake_st.calls
-    assert ("markdown", "#### Saved Chats") in fake_st.calls
+    assert ("sidebar_markdown", "#### Saved Chats") in fake_st.calls
     assert ("container", {"height": 520, "border": True}) in fake_st.calls
     assert ("chat_message", "user") in fake_st.calls
     assert ("chat_message", "assistant") in fake_st.calls
@@ -431,6 +451,24 @@ def test_s3_chat_sends_selected_keys_and_preserves_history(monkeypatch):
         "Rent is due on the first day of each month.",
     ) in fake_st.calls
     assert ("markdown", "#### Sources") not in fake_st.calls
+
+
+def test_s3_chat_keeps_query_box_visible(monkeypatch):
+    fake_st = RecordingStreamlit()
+    monkeypatch.setattr(tabs, "st", fake_st)
+    monkeypatch.setattr(tabs, "call_api_get", lambda path: s3_leases())
+
+    tabs.render_s3_chat_tab()
+
+    style_calls = [
+        call
+        for call in fake_st.calls
+        if call[0] == "markdown" and "stChatInput" in call[1]
+    ]
+    assert style_calls
+    assert "position: fixed" in style_calls[0][1]
+    assert "bottom: 0" in style_calls[0][1]
+    assert style_calls[0][2] == {"unsafe_allow_html": True}
 
 
 def test_s3_chat_toggle_shows_sources_after_assistant_response(monkeypatch):
@@ -490,7 +528,7 @@ def test_s3_chat_sends_active_session_id(monkeypatch):
     assert calls[0][1]["session_id"] == "session-abc"
 
 
-def test_s3_chat_loads_saved_session_from_side_panel(monkeypatch):
+def test_s3_chat_loads_saved_session_from_sidebar(monkeypatch):
     leases = s3_leases()
     fake_st = RecordingStreamlit()
     fake_st.buttons["Rent question - 2026-01-01T00:00:00"] = True
@@ -544,9 +582,8 @@ def test_s3_chat_loads_saved_session_from_side_panel(monkeypatch):
             "citations": [],
         },
     ]
-    assert fake_st.session_state["rag_chat_pending_lease_keys"] == [
-        "sample_leases/valid_lease_b.txt"
-    ]
+    assert fake_st.session_state["rag_chat_lease_keys"] == [leases[1]]
+    assert "rag_chat_pending_lease_keys" not in fake_st.session_state
 
 
 def test_s3_chat_applies_pending_lease_selection_before_widget(monkeypatch):
@@ -578,7 +615,8 @@ def test_s3_chat_new_chat_clears_visible_session(monkeypatch):
 
     assert fake_st.session_state["rag_chat_history"] == []
     assert "rag_chat_session_id" not in fake_st.session_state
-    assert fake_st.session_state["rag_chat_pending_lease_keys"] == []
+    assert fake_st.session_state["rag_chat_lease_keys"] == []
+    assert "rag_chat_pending_lease_keys" not in fake_st.session_state
 
 
 def test_s3_chat_clear_history_is_below_chat_window(monkeypatch):
