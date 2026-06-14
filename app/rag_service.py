@@ -1579,6 +1579,7 @@ SUMMARY_LOOKUP_FIELDS = (
     LANDLORD_OBLIGATIONS_FIELD,
     UNUSUAL_CLAUSES_FIELD,
     RENT_DUE_FIELD,
+    MONTHLY_RENT_FIELD,
     SECURITY_DEPOSIT_FIELD,
     NOTICE_PERIOD_FIELD,
     LEASE_START_FIELD,
@@ -1587,7 +1588,6 @@ SUMMARY_LOOKUP_FIELDS = (
     LANDLORD_NAME_FIELD,
     PROPERTY_ADDRESS_FIELD,
     PLAIN_SUMMARY_FIELD,
-    MONTHLY_RENT_FIELD,
 )
 
 SUMMARY_COMPARISON_FIELDS = (
@@ -1595,7 +1595,78 @@ SUMMARY_COMPARISON_FIELDS = (
     SummaryComparisonSpec(SECURITY_DEPOSIT_FIELD, "money"),
     SummaryComparisonSpec(LEASE_START_FIELD, "date"),
     SummaryComparisonSpec(LEASE_END_FIELD, "date"),
+    SummaryComparisonSpec(NOTICE_PERIOD_FIELD, "duration"),
 )
+
+LOWER_COMPARISON_TERMS = (
+    "cheapest",
+    "lowest",
+    "least expensive",
+    "minimum",
+    "min",
+    "smallest",
+    "earliest",
+    "first",
+    "soonest",
+    "shortest",
+)
+UPPER_COMPARISON_TERMS = (
+    "highest",
+    "most expensive",
+    "maximum",
+    "max",
+    "largest",
+    "biggest",
+    "latest",
+    "last",
+    "longest",
+)
+IMPLIED_RENT_LOWEST_TERMS = (
+    "cheapest",
+    "least expensive",
+    "lowest price",
+    "lowest cost",
+    "minimum price",
+    "minimum cost",
+)
+IMPLIED_RENT_HIGHEST_TERMS = (
+    "most expensive",
+    "highest price",
+    "highest cost",
+    "maximum price",
+    "maximum cost",
+)
+IMPLIED_RENT_SUBJECT_TERMS = (
+    "lease",
+    "leases",
+    "property",
+    "properties",
+    "unit",
+    "units",
+    "home",
+    "homes",
+    "flat",
+    "flats",
+    "apartment",
+    "apartments",
+    "one",
+)
+WORD_NUMBERS = {
+    "a": 1,
+    "an": 1,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
 
 
 def _answer_summary_deterministic_question(
@@ -1608,6 +1679,9 @@ def _answer_summary_deterministic_question(
     comparison = _summary_comparison_request(question)
     if comparison is not None:
         return _answer_summary_comparison_question(question, summaries, comparison)
+
+    if _has_summary_comparison_intent(question):
+        return None
 
     lookup = _summary_lookup_field(question)
     if lookup is not None:
@@ -1622,19 +1696,16 @@ def _answer_summary_comparison_question(
     request: SummaryComparisonRequest,
 ) -> RAGChatResponse:
     field = request.spec.field
-    candidates: list[tuple[LeaseSummaryRecord, str, Any]] = []
-    missing = [
-        summary
-        for summary in summaries
-        if not _summary_has_parseable_comparison_value(summary, request.spec)
-    ]
+    candidates: list[tuple[int, LeaseSummaryRecord, str, Any]] = []
+    missing: list[tuple[int, LeaseSummaryRecord]] = []
 
-    for summary in summaries:
+    for index, summary in enumerate(summaries, start=1):
         raw_value = _summary_field_value(summary, field)
         normalized = _normalised_comparison_value(summary, request.spec)
         if normalized is None:
+            missing.append((index, summary))
             continue
-        candidates.append((summary, _format_summary_value(raw_value), normalized))
+        candidates.append((index, summary, _format_summary_value(raw_value), normalized))
 
     if not candidates:
         answer = (
@@ -1642,8 +1713,7 @@ def _answer_summary_comparison_question(
             f"had a parseable {field.label}."
         )
         if missing:
-            answer += " Missing or unparseable values: "
-            answer += ", ".join(_summary_location(summary) for summary in missing) + "."
+            answer += _format_missing_comparison_block(field, missing)
         return RAGChatResponse(
             question=question,
             answer=answer,
@@ -1652,28 +1722,32 @@ def _answer_summary_comparison_question(
             warnings=[],
         )
 
-    selected = min(candidates, key=lambda item: item[2])
-    if request.mode in {"highest", "latest"}:
-        selected = max(candidates, key=lambda item: item[2])
+    selected_normalized = min(candidates, key=lambda item: item[3])[3]
+    if request.mode in {"highest", "latest", "longest"}:
+        selected_normalized = max(candidates, key=lambda item: item[3])[3]
 
-    selected_summary, selected_value, _ = selected
+    winners = [
+        candidate for candidate in candidates if candidate[3] == selected_normalized
+    ]
+    _, selected_summary, selected_value, _ = winners[0]
     adjective = _comparison_adjective(field, request.mode)
-    answer = (
-        f"The {adjective} {field.label} I found is {selected_value} in "
-        f"{selected_summary.filename} ({selected_summary.key}). I compared "
-        f"{len(candidates)} indexed lease summaries with parseable {field.label}."
-    )
-    if missing:
-        answer += (
-            " I could not include these leases because their "
-            f"{field.label} was missing or unparseable: "
+    if len(winners) == 1:
+        answer = _format_single_comparison_answer(
+            field,
+            adjective,
+            selected_value,
+            selected_summary,
         )
-        answer += ", ".join(_summary_location(summary) for summary in missing) + "."
+    else:
+        answer = _format_tied_comparison_answer(field, adjective, selected_value, winners)
+
+    if missing:
+        answer += _format_missing_comparison_block(field, missing)
 
     return RAGChatResponse(
         question=question,
         answer=answer,
-        citations=[_summary_citation(selected_summary)],
+        citations=[_summary_citation(summary) for _, summary, _, _ in winners],
         verification=_supported_chat_verification(answer, selected_value),
         warnings=[],
     )
@@ -1685,27 +1759,33 @@ def _answer_summary_lookup_question(
     field: SummaryFieldSpec,
 ) -> RAGChatResponse:
     cleaned = question.lower()
-    values: list[tuple[LeaseSummaryRecord, str]] = []
-    missing: list[LeaseSummaryRecord] = []
+    values: list[tuple[int, LeaseSummaryRecord, str]] = []
+    missing: list[tuple[int, LeaseSummaryRecord]] = []
 
-    for summary in summaries:
+    for index, summary in enumerate(summaries, start=1):
         raw_value = _summary_field_value(summary, field)
         if _summary_has_value(raw_value):
-            values.append((summary, _format_summary_value(raw_value)))
+            values.append((index, summary, _format_summary_value(raw_value)))
         else:
-            missing.append(summary)
+            missing.append((index, summary))
 
     if _is_missing_lookup(cleaned):
         if missing:
             answer = (
-                f"The indexed lease summaries missing {field.label} are: "
-                f"{', '.join(_summary_location(summary) for summary in missing)}."
+                f"The indexed lease summaries missing {field.label} are:\n\n"
+                + "\n".join(
+                    f"- {_summary_human_label(summary, index, fallback_to_document=True)}"
+                    for index, summary in missing
+                )
             )
             citations = [
                 _summary_value_citation(summary, field, None)
-                for summary in missing
+                for _, summary in missing
             ]
-            evidence = ", ".join(_summary_location(summary) for summary in missing)
+            evidence = "; ".join(
+                _summary_human_label(summary, index, fallback_to_document=True)
+                for index, summary in missing
+            )
         else:
             answer = (
                 f"All {len(summaries)} indexed lease summaries include "
@@ -1724,37 +1804,48 @@ def _answer_summary_lookup_question(
     if not values:
         answer = f"I could not find {field.label} in the indexed lease summaries."
         if missing:
-            answer += " Missing values: "
-            answer += ", ".join(_summary_location(summary) for summary in missing) + "."
+            answer += (
+                "\n\nMissing values:\n"
+                + "\n".join(
+                    f"- {_summary_human_label(summary, index, fallback_to_document=True)}"
+                    for index, summary in missing
+                )
+            )
         return RAGChatResponse(
             question=question,
             answer=answer,
-            citations=[_summary_value_citation(summary, field, None) for summary in missing],
+            citations=[
+                _summary_value_citation(summary, field, None)
+                for _, summary in missing
+            ],
             verification=_supported_chat_verification(answer, field.label),
             warnings=[],
         )
 
     if len(values) == 1:
-        summary, value = values[0]
-        answer = (
-            f"The {field.label} for {_summary_display_name(summary)} "
-            f"{_summary_lookup_verb(field)} "
-            f"{value}."
-        )
+        index, summary, value = values[0]
+        answer = _format_single_lookup_answer(field, summary, value, index)
+    elif field.is_list:
+        answer = _format_multi_list_lookup_answer(field, values)
     else:
         answer = (
             f"The {_pluralize_label(field.label)} for the leases are:\n\n"
             + "\n".join(
-                f"- {_summary_lookup_prefix(summary, field)}: {value}"
-                for summary, value in values
+                (
+                    f"- For {_summary_human_label(summary, index, field.field_name)}: "
+                    f"{value}"
+                )
+                for index, summary, value in values
             )
         )
 
     if missing:
         answer += (
-            f" I could not find {field.label} in: "
-            + ", ".join(_summary_location(summary) for summary in missing)
-            + "."
+            f"\n\nI could not find {field.label} in:\n"
+            + "\n".join(
+                f"- {_summary_human_label(summary, index, fallback_to_document=True)}"
+                for index, summary in missing
+            )
         )
 
     return RAGChatResponse(
@@ -1762,18 +1853,18 @@ def _answer_summary_lookup_question(
         answer=answer,
         citations=[
             _summary_value_citation(summary, field, value)
-            for summary, value in values
+            for _, summary, value in values
         ],
         verification=_supported_chat_verification(
             answer,
-            "; ".join(value for _, value in values),
+            "; ".join(value for _, _, value in values),
         ),
         warnings=[],
     )
 
 
 def _summary_lookup_field(question: str) -> SummaryFieldSpec | None:
-    cleaned = question.lower()
+    cleaned = _clean_question(question)
     for field in SUMMARY_LOOKUP_FIELDS:
         if _summary_field_matches(cleaned, field):
             return field
@@ -1781,18 +1872,24 @@ def _summary_lookup_field(question: str) -> SummaryFieldSpec | None:
 
 
 def _summary_comparison_request(question: str) -> SummaryComparisonRequest | None:
-    cleaned = question.lower()
+    cleaned = _clean_question(question)
     for spec in SUMMARY_COMPARISON_FIELDS:
         if not _summary_field_matches(cleaned, spec.field):
             continue
         mode = _comparison_mode(cleaned, spec.kind)
         if mode is not None:
             return SummaryComparisonRequest(spec=spec, mode=mode)
+    implied_rent_mode = _implied_monthly_rent_comparison_mode(cleaned)
+    if implied_rent_mode is not None:
+        return SummaryComparisonRequest(
+            spec=SummaryComparisonSpec(MONTHLY_RENT_FIELD, "money"),
+            mode=implied_rent_mode,
+        )
     return None
 
 
 def _summary_field_matches(cleaned_question: str, field: SummaryFieldSpec) -> bool:
-    return any(alias in cleaned_question for alias in field.aliases)
+    return any(_contains_phrase(cleaned_question, alias) for alias in field.aliases)
 
 
 def _comparison_mode(cleaned_question: str, kind: str) -> str | None:
@@ -1802,10 +1899,22 @@ def _comparison_mode(cleaned_question: str, kind: str) -> str | None:
         if _contains_any(cleaned_question, ("latest", "last")):
             return "latest"
         return None
+    if kind == "duration":
+        if _contains_any(
+            cleaned_question,
+            ("shortest", "lowest", "minimum", "min", "smallest"),
+        ):
+            return "shortest"
+        if _contains_any(
+            cleaned_question,
+            ("longest", "highest", "maximum", "max", "largest", "biggest"),
+        ):
+            return "longest"
+        return None
 
     if _contains_any(
         cleaned_question,
-        ("cheapest", "lowest", "least expensive", "minimum", "min ", "smallest"),
+        ("cheapest", "lowest", "least expensive", "minimum", "min", "smallest"),
     ):
         return "lowest"
     if _contains_any(
@@ -1817,7 +1926,41 @@ def _comparison_mode(cleaned_question: str, kind: str) -> str | None:
 
 
 def _contains_any(value: str, terms: tuple[str, ...]) -> bool:
-    return any(term in value for term in terms)
+    return any(_contains_phrase(value, term) for term in terms)
+
+
+def _clean_question(question: str) -> str:
+    return re.sub(r"\s+", " ", question.lower()).strip()
+
+
+def _contains_phrase(value: str, phrase: str) -> bool:
+    cleaned_phrase = phrase.strip().lower()
+    if not cleaned_phrase:
+        return False
+    return (
+        re.search(
+            rf"(?<![a-z0-9]){re.escape(cleaned_phrase)}(?![a-z0-9])",
+            value,
+        )
+        is not None
+    )
+
+
+def _has_summary_comparison_intent(question: str) -> bool:
+    cleaned = _clean_question(question)
+    if not _contains_any(cleaned, LOWER_COMPARISON_TERMS + UPPER_COMPARISON_TERMS):
+        return False
+    return _contains_any(cleaned, ("which", "what", "who"))
+
+
+def _implied_monthly_rent_comparison_mode(cleaned_question: str) -> str | None:
+    if not _contains_any(cleaned_question, IMPLIED_RENT_SUBJECT_TERMS):
+        return None
+    if _contains_any(cleaned_question, IMPLIED_RENT_LOWEST_TERMS):
+        return "lowest"
+    if _contains_any(cleaned_question, IMPLIED_RENT_HIGHEST_TERMS):
+        return "highest"
+    return None
 
 
 def _is_missing_lookup(cleaned_question: str) -> bool:
@@ -1870,38 +2013,147 @@ def _normalised_comparison_value(
         return _normalise_money_amount(_format_summary_value(raw_value))
     if spec.kind == "date":
         return _normalise_date_value(_format_summary_value(raw_value))
+    if spec.kind == "duration":
+        return _normalise_duration_days(_format_summary_value(raw_value))
     return None
 
 
 def _comparison_adjective(field: SummaryFieldSpec, mode: str) -> str:
     if field.field_name == "monthly_rent_amount" and mode == "lowest":
         return "cheapest"
+    if field.field_name == "monthly_rent_amount" and mode == "highest":
+        return "most expensive"
     return mode
 
 
-def _summary_location(summary: LeaseSummaryRecord) -> str:
-    return f"{summary.filename} ({summary.key})"
-
-
-def _summary_display_name(summary: LeaseSummaryRecord) -> str:
-    stem = PurePosixPath(summary.filename or summary.key).stem
-    cleaned = re.sub(r"[_-]+", " ", stem).strip()
-    if not cleaned:
-        cleaned = summary.filename or summary.key
-    if "lease" not in cleaned.lower():
-        cleaned = f"{cleaned} lease"
-    return cleaned
-
-
-def _summary_lookup_prefix(
+def _summary_human_label(
     summary: LeaseSummaryRecord,
-    field: SummaryFieldSpec,
+    fallback_index: int,
+    excluded_field: str | None = None,
+    fallback_to_document: bool = False,
 ) -> str:
-    if field.field_name != "property_address":
-        address = summary.summary.extraction.property_address
-        if address:
-            return f"For {address}"
-    return _summary_display_name(summary)
+    extraction = summary.summary.extraction
+    for field_name, value in (
+        ("property_address", extraction.property_address),
+        ("tenant_name", extraction.tenant_name),
+        ("landlord_name", extraction.landlord_name),
+    ):
+        if field_name == excluded_field:
+            continue
+        if value and str(value).strip():
+            return str(value).strip()
+    if fallback_to_document:
+        return _summary_document_label(summary, fallback_index)
+    return f"Indexed lease {fallback_index}"
+
+
+def _summary_document_label(
+    summary: LeaseSummaryRecord,
+    fallback_index: int,
+) -> str:
+    filename = summary.filename.strip() if summary.filename else ""
+    if filename:
+        return filename
+    key_name = PurePosixPath(summary.key).name if summary.key else ""
+    if key_name:
+        return key_name
+    return f"Indexed lease {fallback_index}"
+
+
+def _format_single_lookup_answer(
+    field: SummaryFieldSpec,
+    summary: LeaseSummaryRecord,
+    value: str,
+    fallback_index: int,
+) -> str:
+    label = _summary_human_label(summary, fallback_index, field.field_name)
+    if field.is_list:
+        items = _summary_list_items(value)
+        if len(items) > 1:
+            return (
+                f"For {label}, the {field.label} are:\n\n"
+                + "\n".join(f"- {item}" for item in items)
+            )
+        if items:
+            return f"For {label}, the {field.label} are:\n\n- {items[0]}"
+        return (
+            f"For {label}, the {field.label} are not stated in the indexed "
+            "lease summary."
+        )
+    return f"For {label}, the {field.label} is {value}."
+
+
+def _format_multi_list_lookup_answer(
+    field: SummaryFieldSpec,
+    values: list[tuple[int, LeaseSummaryRecord, str]],
+) -> str:
+    sections: list[str] = []
+    for index, summary, value in values:
+        label = _summary_human_label(summary, index, field.field_name)
+        items = _summary_list_items(value)
+        if not items:
+            continue
+        sections.append(
+            f"For {label}:\n" + "\n".join(f"- {item}" for item in items)
+        )
+    if not sections:
+        return f"I could not find {field.label} in the indexed lease summaries."
+    return (
+        f"The {_pluralize_label(field.label)} for the leases are:\n\n"
+        + "\n\n".join(sections)
+    )
+
+
+def _format_single_comparison_answer(
+    field: SummaryFieldSpec,
+    adjective: str,
+    selected_value: str,
+    summary: LeaseSummaryRecord,
+) -> str:
+    extraction = summary.summary.extraction
+    return "\n".join(
+        [
+            f"The {adjective} {field.label} is {selected_value}.",
+            "",
+            f"- Property: {_summary_detail_value(extraction.property_address)}",
+            f"- Tenant: {_summary_detail_value(extraction.tenant_name)}",
+            f"- Landlord: {_summary_detail_value(extraction.landlord_name)}",
+        ]
+    )
+
+
+def _format_tied_comparison_answer(
+    field: SummaryFieldSpec,
+    adjective: str,
+    selected_value: str,
+    winners: list[tuple[int, LeaseSummaryRecord, str, Any]],
+) -> str:
+    return (
+        f"The {adjective} {field.label} is {selected_value}. "
+        "These leases are tied:\n\n"
+        + "\n".join(
+            f"- {_summary_human_label(summary, index)}"
+            for index, summary, _, _ in winners
+        )
+    )
+
+
+def _format_missing_comparison_block(
+    field: SummaryFieldSpec,
+    missing: list[tuple[int, LeaseSummaryRecord]],
+) -> str:
+    return (
+        f"\n\nI could not include these leases because {field.label} "
+        "was missing or unparseable:\n"
+        + "\n".join(
+            f"- {_summary_human_label(summary, index, fallback_to_document=True)}"
+            for index, summary in missing
+        )
+    )
+
+
+def _summary_detail_value(value: str | None) -> str:
+    return str(value).strip() if value and str(value).strip() else "Not stated"
 
 
 def _pluralize_label(label: str) -> str:
@@ -1918,16 +2170,16 @@ def _pluralize_label(label: str) -> str:
     return f"{label}s"
 
 
-def _summary_lookup_verb(field: SummaryFieldSpec) -> str:
-    return "are" if field.is_list or field.label.endswith("s") else "is"
-
-
 def _format_summary_value(value: str | list[str] | None) -> str:
     if value is None:
         return ""
     if isinstance(value, list):
         return "; ".join(str(item).strip() for item in value if str(item).strip())
     return str(value).strip()
+
+
+def _summary_list_items(value: str) -> list[str]:
+    return [item.strip() for item in value.split(";") if item.strip()]
 
 
 def _summary_value_citation(
@@ -1972,6 +2224,36 @@ def _normalise_date_value(value: str | None) -> Any | None:
             return datetime.strptime(cleaned, date_format).date()
         except ValueError:
             continue
+    return None
+
+
+def _normalise_duration_days(value: str | None) -> float | None:
+    if not value:
+        return None
+
+    cleaned = re.sub(r"\s+", " ", value.lower()).strip()
+    amount_pattern = r"(\d+(?:\.\d+)?)"
+    word_pattern = "|".join(re.escape(word) for word in WORD_NUMBERS)
+    unit_pattern = r"(?:calendar\s+)?(day|days|week|weeks|month|months|year|years)"
+    match = re.search(rf"\b{amount_pattern}\s+{unit_pattern}\b", cleaned)
+    if match:
+        amount = float(match.group(1))
+        unit = match.group(2)
+    else:
+        match = re.search(rf"\b({word_pattern})\s+{unit_pattern}\b", cleaned)
+        if not match:
+            return None
+        amount = float(WORD_NUMBERS[match.group(1)])
+        unit = match.group(2)
+
+    if unit.startswith("day"):
+        return amount
+    if unit.startswith("week"):
+        return amount * 7
+    if unit.startswith("month"):
+        return amount * 30
+    if unit.startswith("year"):
+        return amount * 365
     return None
 
 

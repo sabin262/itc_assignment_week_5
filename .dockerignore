@@ -7,3 +7,4 @@ artifacts
 sample_leases
 *.pyc
 #Claude Code
+chroma_db

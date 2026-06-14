@@ -4,17 +4,31 @@ from frontend import streamlit_app
 
 
 class Sidebar:
-    def __init__(self, selected_page: str) -> None:
+    def __init__(self, selected_page: str, calls: list) -> None:
         self.selected_page = selected_page
+        self.calls = calls
 
     def radio(self, label: str, options):
+        self.calls.append(("sidebar_radio", label, options))
         return self.selected_page
+
+    def selectbox(self, label: str, options, key=None):
+        self.calls.append(("sidebar_selectbox", label, options, key))
+        return self.selected_page
+
+    def markdown(self, text: str) -> None:
+        self.calls.append(("sidebar_markdown", text))
+
+    def button(self, label: str, **kwargs) -> bool:
+        self.calls.append(("sidebar_button", label, kwargs))
+        return False
 
 
 class RecordingStreamlit:
     def __init__(self, selected_page: str) -> None:
         self.calls = []
-        self.sidebar = Sidebar(selected_page)
+        self.sidebar = Sidebar(selected_page, self.calls)
+        self.session_state = {"workspace_page": selected_page}
 
     def title(self, text: str) -> None:
         self.calls.append(("title", text))
@@ -47,6 +61,17 @@ def test_local_page_renders_only_local_tabs(monkeypatch):
 
     streamlit_app.main()
 
+    assert ("sidebar_markdown", "#### Workspace") in fake_st.calls
+    assert any(
+        call[0] == "sidebar_button" and call[1] == "Local Leases"
+        for call in fake_st.calls
+    )
+    assert any(
+        call[0] == "sidebar_button" and call[1] == "S3 Leases"
+        for call in fake_st.calls
+    )
+    assert not any(call[0] == "sidebar_selectbox" for call in fake_st.calls)
+    assert not any(call[0] == "sidebar_radio" for call in fake_st.calls)
     assert ("tabs", ["Summarise", "Compare"]) in fake_st.calls
     assert rendered == ["local_summarise", "local_compare"]
 
@@ -89,6 +114,17 @@ def test_s3_page_renders_only_s3_tabs(monkeypatch):
 
     streamlit_app.main()
 
+    assert ("sidebar_markdown", "#### Workspace") in fake_st.calls
+    assert any(
+        call[0] == "sidebar_button" and call[1] == "Local Leases"
+        for call in fake_st.calls
+    )
+    assert any(
+        call[0] == "sidebar_button" and call[1] == "S3 Leases"
+        for call in fake_st.calls
+    )
+    assert not any(call[0] == "sidebar_selectbox" for call in fake_st.calls)
+    assert not any(call[0] == "sidebar_radio" for call in fake_st.calls)
     assert (
         "tabs",
         ["Index & Upload", "Index", "Summarise", "Compare", "Chat"],
